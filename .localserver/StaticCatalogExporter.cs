@@ -35,6 +35,15 @@ internal static class StaticCatalogExporter
             cancellationToken);
         var batchCount = totalCount <= 0 ? 0 : (int)Math.Ceiling(totalCount / (double)effectiveBatchSize);
         var generated = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        var latestRows = await store.QueryAsync(
+            new EarthquakeQuery(
+                catalogStart,
+                catalogEnd,
+                EarthquakeStore.ProjectMinMagnitude,
+                1,
+                0),
+            cancellationToken);
+        var actualCatalogEnd = latestRows.Count > 0 ? latestRows[0].Time : catalogStart;
         var batches = new List<StaticCatalogBatchManifest>(Math.Max(1, batchCount));
 
         for (var batchIndex = 0; batchIndex < batchCount; batchIndex += 1)
@@ -64,7 +73,7 @@ internal static class StaticCatalogExporter
                     nextOffset < totalCount,
                     EarthquakeStore.ProjectMinMagnitude,
                     catalogStart,
-                    catalogEnd,
+                    actualCatalogEnd,
                     "compact-v1",
                     "static"),
                 rows.Select(static row => new object?[]
@@ -106,7 +115,7 @@ internal static class StaticCatalogExporter
                 true,
                 EarthquakeStore.ProjectMinMagnitude,
                 catalogStart,
-                catalogEnd,
+                actualCatalogEnd,
                 "compact-v1",
                 effectiveBatchSize,
                 batchCount,

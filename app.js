@@ -2754,7 +2754,7 @@ function prepareCatalogStreamState(queryPlan) {
   state.catalogBatchIndex = 0;
   state.catalogBatchError = null;
   state.catalogStart = queryPlan.start;
-  state.catalogEnd = queryPlan.end;
+  state.catalogEnd = state.catalogDatasetMode === "static" ? 0 : queryPlan.end;
   state.liveSupplementPhase = "idle";
   state.liveSupplementStart = 0;
   state.liveSupplementEnd = 0;
@@ -2907,7 +2907,7 @@ function shouldFetchStaticLiveSupplement(queryPlan) {
     return false;
   }
 
-  const catalogEnd = Number(queryPlan?.end || state.catalogEnd || 0);
+  const catalogEnd = Number(getLatestEventTimestamp(state.rawEvents) || state.catalogEnd || queryPlan?.end || 0);
   if (!catalogEnd) {
     return false;
   }
@@ -2916,7 +2916,7 @@ function shouldFetchStaticLiveSupplement(queryPlan) {
 }
 
 function buildStaticLiveSupplementPlan(queryPlan) {
-  const start = Number(queryPlan?.end || state.catalogEnd || 0) + 1;
+  const start = Number(getLatestEventTimestamp(state.rawEvents) || state.catalogEnd || queryPlan?.end || 0) + 1;
   const end = Date.now();
 
   if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) {
@@ -3076,6 +3076,7 @@ function appendCatalogBatch(payload, options = {}, isFirstBatch = false) {
 
   state.catalogLoaded = true;
   state.catalogLoadedCount = state.rawEvents.length;
+  state.catalogEnd = Math.max(state.catalogEnd || 0, getLatestEventTimestamp(newEvents));
   assignCountriesToEvents(newEvents);
   populateCountryFilterOptions(state.rawEvents);
 
