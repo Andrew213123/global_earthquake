@@ -3150,9 +3150,9 @@ async function fetchEarthquakePayloadSerialDeprecated(queryPlan, requestId) {
       });
 
       setStatus(
-        `姝ｅ湪鍔犺浇 ${queryPlan.label} 鐨勫巻鍙茬洰褰曪細绗?${chunkIndex + 1}/${queryPlan.chunks.length} 娈碉紝绗?${pageIndex + 1} 鎵癸紝宸茬疮璁?${formatNumber(
+        `正在加载 ${queryPlan.label} 的历史目录：第 ${chunkIndex + 1}/${queryPlan.chunks.length} 段，第 ${pageIndex + 1} 批，已累计 ${formatNumber(
           loadedCount
-        )} 鏉?..`
+        )} 条。`
       );
 
       const response = await fetch(url, {
@@ -11229,7 +11229,7 @@ function formatRelativeTime(timestamp) {
 
   const diffDays = Math.round(diffHours / 24);
   if (diffDays < 45) {
-    return `${diffDays} 澶╁墠`;
+    return `${diffDays} 天前`;
   }
 
   const diffMonths = Math.round(diffDays / 30);
@@ -11242,7 +11242,7 @@ function formatRelativeTime(timestamp) {
     return `${diffYears} 年前`;
   }
 
-  return `${diffDays} 澶╁墠`;
+  return `${diffDays} 天前`;
 }
 
 function formatNumber(value) {
