@@ -13,6 +13,8 @@ const STATIC_BOOTSTRAP_BASE_URL = "./data/catalog/";
 const BOOTSTRAP_BATCH_SIZE = 5000;
 const QUERY_PAGE_SIZE = 20000;
 const QUERY_CHUNK_CONCURRENCY = 4;
+const STATIC_LIVE_SUPPLEMENT_FRESHNESS_MS = 30 * 60 * 1000;
+const STATIC_LIVE_SUPPLEMENT_CHUNK_DAYS = 7;
 const SYNC_STATUS_POLL_MS = 20000;
 const POINT_CLOUD_THRESHOLD = 12000;
 const MAGNITUDE_ALTITUDE_BASE = 18000;
@@ -640,6 +642,14 @@ const state = {
   catalogSyncPollHandle: 0,
   catalogSyncPollInFlight: false,
   catalogSyncLastCompletionKey: "",
+  liveSupplementPhase: "idle",
+  liveSupplementStart: 0,
+  liveSupplementEnd: 0,
+  liveSupplementFetchedCount: 0,
+  liveSupplementInsertedCount: 0,
+  liveSupplementUpdatedCount: 0,
+  liveSupplementCompletedAt: 0,
+  liveSupplementLastError: "",
   colorMode: "magnitude",
   heightMode: "magnitude",
   focusPreset: "global",
@@ -2396,6 +2406,7 @@ function resetAnalysisView() {
 
 function exportAnalysisSnapshot() {
   const strongest = pickFeaturedEvent(state.filteredEvents);
+  const latestEvent = getLatestEvent(state.filteredEvents);
   const diagnostics = computeCatalogDiagnostics(state.filteredEvents);
   const depthRegime = computeDepthRegime(state.filteredEvents);
   const energyBudget = computeEnergyBudget(state.filteredEvents);
@@ -2417,9 +2428,7 @@ function exportAnalysisSnapshot() {
       strongestPlace: strongest?.place || null,
       averageMagnitude: computeMeanMagnitude(state.filteredEvents),
       averageDepthKm: computeMeanDepth(state.filteredEvents),
-      latestEventTime: state.filteredEvents[0]?.time
-        ? new Date(state.filteredEvents[0].time).toISOString()
-        : null,
+      latestEventTime: latestEvent?.time ? new Date(latestEvent.time).toISOString() : null,
     },
     diagnostics,
     depthRegime,
@@ -2594,6 +2603,12 @@ async function loadFeed(options = {}) {
       return;
     }
 
+    await fetchStaticLiveSupplement(queryPlan, requestId);
+
+    if (requestId !== state.requestSerial) {
+      return;
+    }
+
     state.catalogLoadComplete = true;
     state.catalogBatchError = null;
     state.queryNote = buildLocalAnalysisNote(state.filteredEvents);
@@ -2740,6 +2755,14 @@ function prepareCatalogStreamState(queryPlan) {
   state.catalogBatchError = null;
   state.catalogStart = queryPlan.start;
   state.catalogEnd = queryPlan.end;
+  state.liveSupplementPhase = "idle";
+  state.liveSupplementStart = 0;
+  state.liveSupplementEnd = 0;
+  state.liveSupplementFetchedCount = 0;
+  state.liveSupplementInsertedCount = 0;
+  state.liveSupplementUpdatedCount = 0;
+  state.liveSupplementCompletedAt = 0;
+  state.liveSupplementLastError = "";
   clearEarthquakeRenderLayers();
   renderAll();
 }
@@ -2779,6 +2802,198 @@ async function streamCatalogBatches(queryPlan, requestId, options = {}) {
       break;
     }
   }
+}
+
+async function fetchStaticLiveSupplement(queryPlan, requestId) {
+  if (!shouldFetchStaticLiveSupplement(queryPlan)) {
+    return;
+  }
+
+  const supplementPlan = buildStaticLiveSupplementPlan(queryPlan);
+  if (!supplementPlan) {
+    return;
+  }
+
+  state.liveSupplementPhase = "running";
+  state.liveSupplementStart = supplementPlan.start;
+  state.liveSupplementEnd = supplementPlan.end;
+  state.liveSupplementFetchedCount = 0;
+  state.liveSupplementInsertedCount = 0;
+  state.liveSupplementUpdatedCount = 0;
+  state.liveSupplementCompletedAt = 0;
+  state.liveSupplementLastError = "";
+
+  const normalizedEvents = [];
+
+  try {
+    for (let chunkIndex = 0; chunkIndex < supplementPlan.chunks.length; chunkIndex += 1) {
+      const chunk = supplementPlan.chunks[chunkIndex];
+      let pageIndex = 0;
+
+      while (true) {
+        if (requestId !== state.requestSerial) {
+          throw new Error("REQUEST_CANCELLED");
+        }
+
+        state.queryNote = buildLiveSupplementQueryNote(supplementPlan, chunkIndex, pageIndex);
+        setStatus(buildLiveSupplementStatusLine(supplementPlan, chunkIndex, pageIndex));
+
+        const offset = pageIndex * QUERY_PAGE_SIZE + 1;
+        const url = buildUsgsUrl(USGS_QUERY_URL, {
+          format: "geojson",
+          eventtype: "earthquake",
+          orderby: "time",
+          starttime: formatQueryDate(chunk.start),
+          endtime: formatQueryDate(chunk.end),
+          minmagnitude: PROJECT_MIN_MAGNITUDE.toFixed(1),
+          limit: QUERY_PAGE_SIZE,
+          offset,
+        });
+
+        const response = await fetch(url, {
+          cache: "no-store",
+          headers: { Accept: "application/geo+json, application/json" },
+        });
+
+        if (!response.ok) {
+          throw new Error(`LIVE_SUPPLEMENT_HTTP ${response.status}`);
+        }
+
+        const payload = await response.json();
+        const batch = Array.isArray(payload?.features) ? payload.features : [];
+        state.liveSupplementFetchedCount += batch.length;
+        normalizedEvents.push(...batch.map(normalizeFeature).filter(Boolean));
+
+        if (batch.length < QUERY_PAGE_SIZE) {
+          break;
+        }
+
+        pageIndex += 1;
+      }
+    }
+
+    const mergeResult = mergeCatalogEvents(normalizedEvents);
+    state.liveSupplementInsertedCount = mergeResult.insertedCount;
+    state.liveSupplementUpdatedCount = mergeResult.updatedCount;
+    state.liveSupplementCompletedAt = Date.now();
+    state.liveSupplementPhase = "completed";
+    state.feedGeneratedAt = Date.now();
+    state.catalogEnd = Math.max(
+      state.catalogEnd,
+      supplementPlan.end,
+      getLatestEventTimestamp(state.rawEvents)
+    );
+    state.catalogExpectedCount = Math.max(state.catalogExpectedCount, state.rawEvents.length);
+    applyFiltersAndRender();
+    setStatus(buildLiveSupplementCompletedLine());
+  } catch (error) {
+    if (error.message === "REQUEST_CANCELLED") {
+      throw error;
+    }
+
+    state.liveSupplementPhase = "failed";
+    state.liveSupplementLastError = error.message;
+    state.queryNote = buildLocalAnalysisNote(state.filteredEvents);
+    renderAll();
+    setStatus(
+      `静态历史目录已载入，但最新事件补充失败：${error.message}。当前仍可基于已加载目录继续分析。`,
+      "warning"
+    );
+  }
+}
+
+function shouldFetchStaticLiveSupplement(queryPlan) {
+  if (state.catalogDatasetMode !== "static") {
+    return false;
+  }
+
+  const catalogEnd = Number(queryPlan?.end || state.catalogEnd || 0);
+  if (!catalogEnd) {
+    return false;
+  }
+
+  return Date.now() - catalogEnd > STATIC_LIVE_SUPPLEMENT_FRESHNESS_MS;
+}
+
+function buildStaticLiveSupplementPlan(queryPlan) {
+  const start = Number(queryPlan?.end || state.catalogEnd || 0) + 1;
+  const end = Date.now();
+
+  if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) {
+    return null;
+  }
+
+  return {
+    start,
+    end,
+    chunks: buildDateChunksByDays(start, end, STATIC_LIVE_SUPPLEMENT_CHUNK_DAYS),
+  };
+}
+
+function buildDateChunksByDays(start, end, chunkDays = 7) {
+  const chunks = [];
+  let cursor = start;
+  const step = Math.max(1, chunkDays) * DAY_MS;
+
+  while (cursor <= end) {
+    const chunkEnd = Math.min(end, cursor + step - 1);
+    chunks.push({
+      start: cursor,
+      end: chunkEnd,
+    });
+    cursor = chunkEnd + 1;
+  }
+
+  return chunks;
+}
+
+function mergeCatalogEvents(events) {
+  let insertedCount = 0;
+  let updatedCount = 0;
+  const touchedEvents = [];
+
+  for (const event of events) {
+    if (!event) {
+      continue;
+    }
+
+    const existing = state.eventById.get(event.id);
+    if (!existing) {
+      state.eventById.set(event.id, event);
+      state.rawEvents.push(event);
+      touchedEvents.push(event);
+      insertedCount += 1;
+      continue;
+    }
+
+    if (
+      event.updated > existing.updated ||
+      event.time !== existing.time ||
+      event.mag !== existing.mag ||
+      event.depth !== existing.depth ||
+      event.lon !== existing.lon ||
+      event.lat !== existing.lat ||
+      event.place !== existing.place ||
+      event.significance !== existing.significance
+    ) {
+      Object.assign(existing, event);
+      touchedEvents.push(existing);
+      updatedCount += 1;
+    }
+  }
+
+  if (touchedEvents.length) {
+    assignCountriesToEvents(touchedEvents);
+  }
+
+  state.catalogLoaded = state.rawEvents.length > 0;
+  state.catalogLoadedCount = state.rawEvents.length;
+
+  return {
+    insertedCount,
+    updatedCount,
+    touchedEvents,
+  };
 }
 
 async function fetchCatalogBatchPayload(queryPlan, offset, requestId) {
@@ -5725,7 +5940,7 @@ function renderStats() {
   const strongest = pickFeaturedEvent(state.filteredEvents);
   const avgDepth = computeMeanDepth(state.filteredEvents);
   const avgMagnitude = computeMeanMagnitude(state.filteredEvents);
-  const latestEvent = state.filteredEvents[0] || null;
+  const latestEvent = getLatestEvent(state.filteredEvents);
   const strongestRegion = strongest ? strongest.countryNameZh || strongest.region : "--";
 
   dom.visibleCount.textContent = formatNumber(state.filteredEvents.length);
@@ -9005,8 +9220,7 @@ function renderEventList() {
     return;
   }
 
-  dom.eventList.innerHTML = state.filteredEvents
-    .slice(0, 10)
+  dom.eventList.innerHTML = getRecentEvents(state.filteredEvents, 10)
     .map((quake) => {
       const activeClass = quake.id === state.selectedEventId ? "active" : "";
       return `
@@ -10174,6 +10388,41 @@ function deriveRegionLabel(place) {
   return truncate(place.trim(), 28);
 }
 
+function getLatestEvent(events) {
+  let latestEvent = null;
+  for (const event of events) {
+    if (!event) {
+      continue;
+    }
+    if (
+      !latestEvent ||
+      event.time > latestEvent.time ||
+      (event.time === latestEvent.time && event.updated > latestEvent.updated)
+    ) {
+      latestEvent = event;
+    }
+  }
+  return latestEvent;
+}
+
+function getLatestEventTimestamp(events) {
+  return getLatestEvent(events)?.time || 0;
+}
+
+function getRecentEvents(events, limit = 10) {
+  return [...events]
+    .sort((left, right) => {
+      if (right.time !== left.time) {
+        return right.time - left.time;
+      }
+      if (right.updated !== left.updated) {
+        return right.updated - left.updated;
+      }
+      return right.mag - left.mag;
+    })
+    .slice(0, limit);
+}
+
 function pickFeaturedEvent(events) {
   return (
     [...events].sort((left, right) => {
@@ -10671,11 +10920,12 @@ function buildQueryNote(queryPlan) {
 function buildLocalQueryNote(queryPlan, storedCount) {
   const sourceLabel = getCatalogSourceLabel();
   const syncCopy = buildSyncDetailCopy(state.catalogSyncStatus, { compact: true });
+  const supplementCopy = buildStaticSupplementQueryCopy();
   return `${sourceLabel}摘要已就绪：目录总量 ${formatNumber(
     storedCount
   )} 条；本次计划分批载入 ${formatNumber(queryPlan.matchedCount)} 条。${
     syncCopy ? ` ${syncCopy}` : ""
-  }`;
+  }${supplementCopy ? ` ${supplementCopy}` : ""}`;
 }
 
 function buildBatchLoadingQueryNote(queryPlan, batchIndex, loadedBeforeBatch = 0) {
@@ -10716,14 +10966,35 @@ function buildLocalAnalysisNote(scopedEvents) {
 function buildLoadSuccessMessage(queryPlan) {
   const coverageSuffix = buildSyncDisplayCopy(state.catalogSyncStatus, { useRefreshHint: true });
   const sourceLabel = getCatalogSourceLabel();
+  const supplementCopy = buildStaticSupplementResultCopy();
 
   return `已完成${sourceLabel}分批加载：${queryPlan.label} 共载入 ${formatNumber(
     state.catalogLoadedCount || state.rawEvents.length
-  )} 条事件。${coverageSuffix}`;
+  )} 条事件。${supplementCopy}${coverageSuffix}`;
 }
 
 function buildSyncDisplayCopy(syncStatus, options = {}) {
   if (state.catalogDatasetMode === "static") {
+    if (state.liveSupplementPhase === "running") {
+      return `当前页面基于 GitHub Pages 静态历史分片，并正在补齐 ${formatUtcDateTime(
+        state.liveSupplementStart
+      )} UTC 之后的最新 USGS 事件。已抓取 ${formatNumber(state.liveSupplementFetchedCount)} 条。`;
+    }
+
+    if (state.liveSupplementPhase === "completed") {
+      return `当前页面基于 GitHub Pages 静态历史分片，并已补充最新 USGS 事件：抓取 ${formatNumber(
+        state.liveSupplementFetchedCount
+      )} 条，新增 ${formatNumber(state.liveSupplementInsertedCount)} 条，更新 ${formatNumber(
+        state.liveSupplementUpdatedCount
+      )} 条。`;
+    }
+
+    if (state.liveSupplementPhase === "failed") {
+      return `当前页面基于 GitHub Pages 静态历史分片；最近一次最新事件补充失败：${
+        state.liveSupplementLastError || "未知错误"
+      }。`;
+    }
+
     return "当前页面使用 GitHub Pages 静态历史分片；后续筛选与分析均在浏览器本地完成。";
   }
 
@@ -10753,7 +11024,76 @@ function buildSyncDisplayCopy(syncStatus, options = {}) {
 }
 
 function getCatalogSourceLabel() {
-  return state.catalogDatasetMode === "static" ? "GitHub Pages 静态历史目录" : "本地 SQLite 数据仓";
+  if (state.catalogDatasetMode !== "static") {
+    return "本地 SQLite 数据仓";
+  }
+
+  if (state.liveSupplementPhase === "running" || state.liveSupplementPhase === "completed") {
+    return "GitHub Pages 静态历史目录 + USGS 最新补充";
+  }
+
+  return "GitHub Pages 静态历史目录";
+}
+
+function buildStaticSupplementQueryCopy() {
+  if (state.catalogDatasetMode !== "static") {
+    return "";
+  }
+
+  if (state.liveSupplementPhase === "running") {
+    return `正在补齐 ${formatUtcDateTime(state.liveSupplementStart)} UTC 之后的最新事件。`;
+  }
+
+  if (state.liveSupplementPhase === "completed" && state.liveSupplementFetchedCount > 0) {
+    return `已补充最新事件 ${formatNumber(state.liveSupplementFetchedCount)} 条。`;
+  }
+
+  if (state.liveSupplementPhase === "failed") {
+    return `最新事件补充失败：${state.liveSupplementLastError || "未知错误"}。`;
+  }
+
+  return "";
+}
+
+function buildStaticSupplementResultCopy() {
+  if (state.catalogDatasetMode !== "static") {
+    return "";
+  }
+
+  if (state.liveSupplementPhase === "completed" && state.liveSupplementFetchedCount > 0) {
+    return `并已补充最新 USGS 事件 ${formatNumber(state.liveSupplementFetchedCount)} 条（新增 ${formatNumber(
+      state.liveSupplementInsertedCount
+    )} 条，更新 ${formatNumber(state.liveSupplementUpdatedCount)} 条）。`;
+  }
+
+  if (state.liveSupplementPhase === "failed") {
+    return `最新事件补充失败：${state.liveSupplementLastError || "未知错误"}。`;
+  }
+
+  return "";
+}
+
+function buildLiveSupplementQueryNote(supplementPlan, chunkIndex, pageIndex) {
+  return `当前静态历史目录已就绪，正在补齐 ${formatDateRange(
+    supplementPlan.start,
+    supplementPlan.end
+  )} 的最新事件：第 ${formatNumber(chunkIndex + 1)}/${formatNumber(
+    supplementPlan.chunks.length
+  )} 段，第 ${formatNumber(pageIndex + 1)} 批；已抓取 ${formatNumber(state.liveSupplementFetchedCount)} 条。`;
+}
+
+function buildLiveSupplementStatusLine(supplementPlan, chunkIndex, pageIndex) {
+  return `正在补齐最新事件：第 ${formatNumber(chunkIndex + 1)}/${formatNumber(
+    supplementPlan.chunks.length
+  )} 段，第 ${formatNumber(pageIndex + 1)} 批；已抓取 ${formatNumber(
+    state.liveSupplementFetchedCount
+  )} 条。`;
+}
+
+function buildLiveSupplementCompletedLine() {
+  return `最新事件补充完成：抓取 ${formatNumber(state.liveSupplementFetchedCount)} 条，新增 ${formatNumber(
+    state.liveSupplementInsertedCount
+  )} 条，更新 ${formatNumber(state.liveSupplementUpdatedCount)} 条。`;
 }
 
 function buildSyncDetailCopy(syncStatus, options = {}) {
