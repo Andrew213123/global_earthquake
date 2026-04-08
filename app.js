@@ -8,6 +8,8 @@ const LOCAL_QUERY_URL = "./api/earthquakes";
 const LOCAL_BOOTSTRAP_URL = "./api/catalog/bootstrap";
 const LOCAL_BOOTSTRAP_BATCH_URL = "./api/catalog/bootstrap-batch";
 const LOCAL_SYNC_STATUS_URL = "./api/storage/catalog-sync";
+const LOCAL_SYNC_TRIGGER_URL = "./api/storage/sync";
+const LOCAL_INGEST_URL = "./api/storage/ingest";
 const STATIC_BOOTSTRAP_MANIFEST_URL = "./data/catalog/manifest.json";
 const STATIC_BOOTSTRAP_BASE_URL = "./data/catalog/";
 const BOOTSTRAP_BATCH_SIZE = 5000;
@@ -650,6 +652,13 @@ const state = {
   liveSupplementUpdatedCount: 0,
   liveSupplementCompletedAt: 0,
   liveSupplementLastError: "",
+  liveSupplementDbSyncPhase: "idle",
+  liveSupplementDbFetchedCount: 0,
+  liveSupplementDbInsertedCount: 0,
+  liveSupplementDbUpdatedCount: 0,
+  liveSupplementDbStoredCount: 0,
+  liveSupplementDbCompletedAt: 0,
+  liveSupplementDbLastError: "",
   colorMode: "magnitude",
   heightMode: "magnitude",
   focusPreset: "global",
@@ -720,6 +729,9 @@ const dom = {
   legend: document.querySelector("#legend"),
   insightsPanel: document.querySelector(".insights-panel"),
   analysisScope: document.querySelector("#analysis-scope"),
+  analysisDbSyncCard: document.querySelector("#analysis-db-sync"),
+  analysisDbSyncTitle: document.querySelector("#analysis-db-sync-title"),
+  analysisDbSyncBody: document.querySelector("#analysis-db-sync-body"),
   analysisResetButton: document.querySelector("#analysis-reset-button"),
   analysisExportButton: document.querySelector("#analysis-export-button"),
   analysisTooltip: document.querySelector("#analysis-tooltip"),
@@ -2763,6 +2775,13 @@ function prepareCatalogStreamState(queryPlan) {
   state.liveSupplementUpdatedCount = 0;
   state.liveSupplementCompletedAt = 0;
   state.liveSupplementLastError = "";
+  state.liveSupplementDbSyncPhase = "idle";
+  state.liveSupplementDbFetchedCount = 0;
+  state.liveSupplementDbInsertedCount = 0;
+  state.liveSupplementDbUpdatedCount = 0;
+  state.liveSupplementDbStoredCount = 0;
+  state.liveSupplementDbCompletedAt = 0;
+  state.liveSupplementDbLastError = "";
   clearEarthquakeRenderLayers();
   renderAll();
 }
@@ -2886,6 +2905,7 @@ async function fetchStaticLiveSupplement(queryPlan, requestId) {
     state.catalogExpectedCount = Math.max(state.catalogExpectedCount, state.rawEvents.length);
     applyFiltersAndRender();
     setStatus(buildLiveSupplementCompletedLine());
+    void persistLiveSupplementToDatabase(normalizedEvents, requestId);
   } catch (error) {
     if (error.message === "REQUEST_CANCELLED") {
       throw error;
@@ -2897,6 +2917,111 @@ async function fetchStaticLiveSupplement(queryPlan, requestId) {
     renderAll();
     setStatus(
       `静态历史目录已载入，但最新事件补充失败：${error.message}。当前仍可基于已加载目录继续分析。`,
+      "warning"
+    );
+  }
+}
+
+function canPersistLiveSupplementToLocalDatabase() {
+  const hostname = String(window.location.hostname || "").toLowerCase();
+  return hostname === "127.0.0.1" || hostname === "localhost";
+}
+
+function buildLiveSupplementIngestPayload(events) {
+  return {
+    events: events.map((event) => ({
+      id: event.id,
+      lon: event.lon,
+      lat: event.lat,
+      depth: event.depth,
+      mag: event.mag,
+      time: event.time,
+      updated: event.updated,
+      place: event.place,
+      url: event.url,
+      alert: event.alert,
+      tsunami: event.tsunami,
+      significance: event.significance,
+    })),
+  };
+}
+
+async function persistLiveSupplementToDatabase(events, requestId) {
+  if (!canPersistLiveSupplementToLocalDatabase()) {
+    return;
+  }
+
+  if (!Array.isArray(events) || !events.length) {
+    return;
+  }
+
+  if (requestId !== state.requestSerial) {
+    return;
+  }
+
+  state.liveSupplementDbSyncPhase = "running";
+  state.liveSupplementDbFetchedCount = events.length;
+  state.liveSupplementDbInsertedCount = 0;
+  state.liveSupplementDbUpdatedCount = 0;
+  state.liveSupplementDbStoredCount = 0;
+  state.liveSupplementDbCompletedAt = 0;
+  state.liveSupplementDbLastError = "";
+  state.queryNote = buildLocalAnalysisNote(state.filteredEvents);
+  renderAll();
+  setStatus(buildLiveSupplementDatabaseSyncStatusLine());
+
+  try {
+    const response = await fetch(LOCAL_INGEST_URL, {
+      method: "POST",
+      cache: "no-store",
+      headers: {
+        Accept: "application/json",
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(buildLiveSupplementIngestPayload(events)),
+    });
+
+    if (!response.ok) {
+      throw new Error(`LOCAL_INGEST_HTTP ${response.status}`);
+    }
+
+    const payload = await response.json();
+
+    if (requestId !== state.requestSerial) {
+      return;
+    }
+
+    state.liveSupplementDbSyncPhase = "completed";
+    state.liveSupplementDbFetchedCount = Number(payload?.fetchedCount || events.length);
+    state.liveSupplementDbInsertedCount = Number(payload?.insertedCount || 0);
+    state.liveSupplementDbUpdatedCount = Number(payload?.updatedCount || 0);
+    state.liveSupplementDbStoredCount = Number(payload?.storedCount || 0);
+    state.liveSupplementDbCompletedAt = Date.now();
+    state.liveSupplementDbLastError = "";
+    if (state.catalogSyncStatus) {
+      state.catalogSyncStatus = {
+        ...state.catalogSyncStatus,
+        fetchedCount: state.liveSupplementDbFetchedCount,
+        insertedCount: state.liveSupplementDbInsertedCount,
+        updatedCount: state.liveSupplementDbUpdatedCount,
+        skippedCount: Number(payload?.skippedCount || 0),
+        storedCount: state.liveSupplementDbStoredCount || state.catalogSyncStatus.storedCount,
+      };
+    }
+    state.queryNote = buildLocalAnalysisNote(state.filteredEvents);
+    renderAll();
+    setStatus(buildLiveSupplementDatabaseSyncCompletedLine());
+  } catch (error) {
+    if (requestId !== state.requestSerial) {
+      return;
+    }
+
+    state.liveSupplementDbSyncPhase = "failed";
+    state.liveSupplementDbLastError = error.message;
+    state.queryNote = buildLocalAnalysisNote(state.filteredEvents);
+    renderAll();
+    setStatus(
+      `最新事件已显示，但写入本地 SQLite 数据仓失败：${error.message || "未知错误"}。`,
       "warning"
     );
   }
@@ -3513,6 +3638,7 @@ function renderAll() {
   renderEntities();
   renderLegend();
   renderAnalysisScope();
+  renderDatabaseSyncStatus();
   renderStats();
   renderHotspotWorkbench();
   renderSelectedEvent();
@@ -3573,6 +3699,7 @@ function renderIncrementalCatalogState(visibleBatchEvents, previousFilteredCount
   updateHighlight(getSelectedEvent());
   renderLegend();
   renderAnalysisScope();
+  renderDatabaseSyncStatus();
   renderStats();
   renderHotspotWorkbench();
   renderSelectedEvent();
@@ -4011,6 +4138,7 @@ function renderActiveAnalysisModule() {
 
 function renderAnalysisLoadingState() {
   const loadingCopy = '<div class="empty-copy">正在根据当前筛选条件重建分析面板，请稍候...</div>';
+  dom.analysisDbSyncBody && (dom.analysisDbSyncBody.innerHTML = loadingCopy);
   dom.selectedEvent && (dom.selectedEvent.innerHTML = loadingCopy);
   dom.eventList && (dom.eventList.innerHTML = loadingCopy);
   dom.compareCountChart && (dom.compareCountChart.innerHTML = loadingCopy);
@@ -5935,6 +6063,56 @@ function renderAnalysisScope() {
     `显示模式：${state.encodingMode === "depth" ? "深度" : "震级"}；样本密度：${density.toFixed(
       2
     )} 条/天${compareCopy}。`;
+}
+
+function renderDatabaseSyncStatus() {
+  if (!dom.analysisDbSyncCard || !dom.analysisDbSyncTitle || !dom.analysisDbSyncBody) {
+    return;
+  }
+
+  let title = "最近一次数据库同步";
+  let body = "当前页面尚未触发本地数据库同步。";
+  let tone = "idle";
+
+  if (!canPersistLiveSupplementToLocalDatabase()) {
+    title = "数据库同步状态";
+    body = "当前为静态站点访问模式，不连接本地 SQLite 数据库。";
+    tone = "static";
+  } else if (state.liveSupplementDbSyncPhase === "running") {
+    title = "正在同步到 SQLite";
+    body = `正在把最新补充事件写入本地数据库：待写入 ${formatNumber(
+      state.liveSupplementDbFetchedCount
+    )} 条。页面中的新数据已可见，数据库会在后台完成更新。`;
+    tone = "running";
+  } else if (state.liveSupplementDbSyncPhase === "completed") {
+    title = `最近一次数据库同步 · ${formatDateTime(state.liveSupplementDbCompletedAt)}`;
+    body = `已写入 ${formatNumber(state.liveSupplementDbFetchedCount)} 条，新增 ${formatNumber(
+      state.liveSupplementDbInsertedCount
+    )} 条，更新 ${formatNumber(state.liveSupplementDbUpdatedCount)} 条${
+      state.liveSupplementDbStoredCount > 0
+        ? `；当前库内总数 ${formatNumber(state.liveSupplementDbStoredCount)} 条。`
+        : "。"
+    }`;
+    tone = "completed";
+  } else if (state.liveSupplementDbSyncPhase === "failed") {
+    title = "数据库同步失败";
+    body = `最新事件已显示，但写入 SQLite 失败：${
+      state.liveSupplementDbLastError || "未知错误"
+    }。`;
+    tone = "failed";
+  } else if (state.catalogSyncStatus?.isRunning) {
+    title = state.catalogSyncStatus.isIncremental ? "增量同步进行中" : "全量同步进行中";
+    body = `${buildSyncDetailCopy(state.catalogSyncStatus)} 当前服务正在更新本地 SQLite 数据仓。`;
+    tone = "running";
+  } else if (state.catalogSyncStatus?.completedAt) {
+    title = `最近一次数据库同步 · ${formatDateTime(state.catalogSyncStatus.completedAt)}`;
+    body = buildSyncDetailCopy(state.catalogSyncStatus) || "最近一次数据库同步已完成。";
+    tone = "completed";
+  }
+
+  dom.analysisDbSyncCard.dataset.tone = tone;
+  dom.analysisDbSyncTitle.textContent = title;
+  dom.analysisDbSyncBody.textContent = body;
 }
 
 function renderStats() {
@@ -10976,10 +11154,14 @@ function buildLoadSuccessMessage(queryPlan) {
 
 function buildSyncDisplayCopy(syncStatus, options = {}) {
   if (state.catalogDatasetMode === "static") {
+    const databaseCopy = buildLiveSupplementDatabaseSyncCopy();
+
     if (state.liveSupplementPhase === "running") {
       return `当前页面基于 GitHub Pages 静态历史分片，并正在补齐 ${formatUtcDateTime(
         state.liveSupplementStart
-      )} UTC 之后的最新 USGS 事件。已抓取 ${formatNumber(state.liveSupplementFetchedCount)} 条。`;
+      )} UTC 之后的最新 USGS 事件。已抓取 ${formatNumber(state.liveSupplementFetchedCount)} 条。${
+        databaseCopy ? ` ${databaseCopy}` : ""
+      }`;
     }
 
     if (state.liveSupplementPhase === "completed") {
@@ -10987,16 +11169,18 @@ function buildSyncDisplayCopy(syncStatus, options = {}) {
         state.liveSupplementFetchedCount
       )} 条，新增 ${formatNumber(state.liveSupplementInsertedCount)} 条，更新 ${formatNumber(
         state.liveSupplementUpdatedCount
-      )} 条。`;
+      )} 条。${databaseCopy ? ` ${databaseCopy}` : ""}`;
     }
 
     if (state.liveSupplementPhase === "failed") {
       return `当前页面基于 GitHub Pages 静态历史分片；最近一次最新事件补充失败：${
         state.liveSupplementLastError || "未知错误"
-      }。`;
+      }。${databaseCopy ? ` ${databaseCopy}` : ""}`;
     }
 
-    return "当前页面使用 GitHub Pages 静态历史分片；后续筛选与分析均在浏览器本地完成。";
+    return `当前页面使用 GitHub Pages 静态历史分片；后续筛选与分析均在浏览器本地完成。${
+      databaseCopy ? ` ${databaseCopy}` : ""
+    }`;
   }
 
   if (!syncStatus) {
@@ -11041,19 +11225,27 @@ function buildStaticSupplementQueryCopy() {
     return "";
   }
 
+  const databaseCopy = buildLiveSupplementDatabaseSyncCopy();
+
   if (state.liveSupplementPhase === "running") {
-    return `正在补齐 ${formatUtcDateTime(state.liveSupplementStart)} UTC 之后的最新事件。`;
+    return `正在补齐 ${formatUtcDateTime(state.liveSupplementStart)} UTC 之后的最新事件。${
+      databaseCopy ? ` ${databaseCopy}` : ""
+    }`;
   }
 
   if (state.liveSupplementPhase === "completed" && state.liveSupplementFetchedCount > 0) {
-    return `已补充最新事件 ${formatNumber(state.liveSupplementFetchedCount)} 条。`;
+    return `已补充最新事件 ${formatNumber(state.liveSupplementFetchedCount)} 条。${
+      databaseCopy ? ` ${databaseCopy}` : ""
+    }`;
   }
 
   if (state.liveSupplementPhase === "failed") {
-    return `最新事件补充失败：${state.liveSupplementLastError || "未知错误"}。`;
+    return `最新事件补充失败：${state.liveSupplementLastError || "未知错误"}。${
+      databaseCopy ? ` ${databaseCopy}` : ""
+    }`;
   }
 
-  return "";
+  return databaseCopy;
 }
 
 function buildStaticSupplementResultCopy() {
@@ -11061,17 +11253,23 @@ function buildStaticSupplementResultCopy() {
     return "";
   }
 
+  const databaseCopy = buildLiveSupplementDatabaseSyncCopy();
+
   if (state.liveSupplementPhase === "completed" && state.liveSupplementFetchedCount > 0) {
     return `并已补充最新 USGS 事件 ${formatNumber(state.liveSupplementFetchedCount)} 条（新增 ${formatNumber(
       state.liveSupplementInsertedCount
-    )} 条，更新 ${formatNumber(state.liveSupplementUpdatedCount)} 条）。`;
+    )} 条，更新 ${formatNumber(state.liveSupplementUpdatedCount)} 条）。${
+      databaseCopy ? ` ${databaseCopy}` : ""
+    }`;
   }
 
   if (state.liveSupplementPhase === "failed") {
-    return `最新事件补充失败：${state.liveSupplementLastError || "未知错误"}。`;
+    return `最新事件补充失败：${state.liveSupplementLastError || "未知错误"}。${
+      databaseCopy ? ` ${databaseCopy}` : ""
+    }`;
   }
 
-  return "";
+  return databaseCopy;
 }
 
 function buildLiveSupplementQueryNote(supplementPlan, chunkIndex, pageIndex) {
@@ -11095,6 +11293,54 @@ function buildLiveSupplementCompletedLine() {
   return `最新事件补充完成：抓取 ${formatNumber(state.liveSupplementFetchedCount)} 条，新增 ${formatNumber(
     state.liveSupplementInsertedCount
   )} 条，更新 ${formatNumber(state.liveSupplementUpdatedCount)} 条。`;
+}
+
+function buildLiveSupplementDatabaseSyncCopy() {
+  if (!canPersistLiveSupplementToLocalDatabase()) {
+    return "";
+  }
+
+  if (state.liveSupplementDbSyncPhase === "running") {
+    return "最新补充事件正在同步到本地 SQLite 数据仓。";
+  }
+
+  if (state.liveSupplementDbSyncPhase === "completed") {
+    return `最新补充事件已同步到本地 SQLite 数据仓：写入 ${formatNumber(
+      state.liveSupplementDbFetchedCount
+    )} 条，新增 ${formatNumber(state.liveSupplementDbInsertedCount)} 条，更新 ${formatNumber(
+      state.liveSupplementDbUpdatedCount
+    )} 条${
+      state.liveSupplementDbStoredCount > 0
+        ? `，库内总数 ${formatNumber(state.liveSupplementDbStoredCount)} 条`
+        : ""
+    }。`;
+  }
+
+  if (state.liveSupplementDbSyncPhase === "failed") {
+    return `最新补充事件同步到本地 SQLite 数据仓失败：${
+      state.liveSupplementDbLastError || "未知错误"
+    }。`;
+  }
+
+  return "";
+}
+
+function buildLiveSupplementDatabaseSyncStatusLine() {
+  return `最新事件已载入页面，正在同步到本地 SQLite 数据仓：待写入 ${formatNumber(
+    state.liveSupplementDbFetchedCount
+  )} 条。`;
+}
+
+function buildLiveSupplementDatabaseSyncCompletedLine() {
+  return `最新事件已同步到本地 SQLite 数据仓：写入 ${formatNumber(
+    state.liveSupplementDbFetchedCount
+  )} 条，新增 ${formatNumber(state.liveSupplementDbInsertedCount)} 条，更新 ${formatNumber(
+    state.liveSupplementDbUpdatedCount
+  )} 条${
+    state.liveSupplementDbStoredCount > 0
+      ? `，库内总数 ${formatNumber(state.liveSupplementDbStoredCount)} 条`
+      : ""
+  }。`;
 }
 
 function buildSyncDetailCopy(syncStatus, options = {}) {

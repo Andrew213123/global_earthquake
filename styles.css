@@ -1143,6 +1143,55 @@ button {
   padding: 8px 12px;
 }
 
+.analysis-db-sync-card {
+  display: grid;
+  gap: 8px;
+  padding: 12px 14px;
+  border-radius: 16px;
+  border: 1px solid rgba(103, 232, 249, 0.1);
+  background:
+    linear-gradient(180deg, rgba(8, 20, 34, 0.72), rgba(5, 12, 22, 0.62)),
+    rgba(255, 255, 255, 0.025);
+}
+
+.analysis-db-sync-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.analysis-db-sync-head strong {
+  color: var(--text);
+  font-size: 0.9rem;
+  line-height: 1.3;
+}
+
+.analysis-db-sync-body {
+  color: var(--muted-strong);
+  font-size: 0.79rem;
+  line-height: 1.55;
+}
+
+.analysis-db-sync-card[data-tone="running"] {
+  border-color: rgba(103, 232, 249, 0.16);
+  box-shadow: inset 0 0 0 1px rgba(103, 232, 249, 0.05);
+}
+
+.analysis-db-sync-card[data-tone="completed"] {
+  border-color: rgba(52, 211, 153, 0.16);
+  background:
+    linear-gradient(180deg, rgba(8, 20, 34, 0.72), rgba(5, 12, 22, 0.62)),
+    radial-gradient(circle at top right, rgba(52, 211, 153, 0.08), transparent 42%);
+}
+
+.analysis-db-sync-card[data-tone="failed"] {
+  border-color: rgba(239, 68, 68, 0.16);
+  background:
+    linear-gradient(180deg, rgba(8, 20, 34, 0.72), rgba(5, 12, 22, 0.62)),
+    radial-gradient(circle at top right, rgba(239, 68, 68, 0.08), transparent 42%);
+}
+
 .analysis-region-workspace,
 .analysis-kpi-panel,
 .hotspot-metric-panel {

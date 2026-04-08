@@ -161,6 +161,61 @@ app.MapPost(
         }
     });
 
+app.MapPost(
+    "/api/storage/ingest",
+    async (
+        IngestRequest request,
+        EarthquakeStore store,
+        CancellationToken cancellationToken) =>
+    {
+        var syncedAt = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        var records = (request.Events ?? [])
+            .Select(item =>
+            {
+                if (item is null ||
+                    string.IsNullOrWhiteSpace(item.Id) ||
+                    item.Lon is null ||
+                    item.Lat is null ||
+                    item.Depth is null ||
+                    item.Mag is null ||
+                    item.Time is null)
+                {
+                    return null;
+                }
+
+                return new EarthquakeRecord(
+                    item.Id.Trim(),
+                    item.Lon.Value,
+                    item.Lat.Value,
+                    Math.Max(0, item.Depth.Value),
+                    item.Mag.Value,
+                    item.Time.Value,
+                    item.Updated ?? item.Time.Value,
+                    string.IsNullOrWhiteSpace(item.Place) ? "未标注位置" : item.Place.Trim(),
+                    item.Url?.Trim() ?? string.Empty,
+                    item.Alert?.Trim() ?? string.Empty,
+                    item.Tsunami ?? 0,
+                    item.Significance ?? 0,
+                    syncedAt);
+            })
+            .OfType<EarthquakeRecord>()
+            .ToArray();
+
+        var upsertResult = await store.UpsertBatchAsync(records, cancellationToken);
+        var storedCount = await store.GetStoredCountAsync(cancellationToken);
+
+        return Results.Ok(new
+        {
+            fetchedCount = upsertResult.FetchedCount,
+            insertedCount = upsertResult.InsertedCount,
+            updatedCount = upsertResult.UpdatedCount,
+            skippedCount = upsertResult.SkippedCount,
+            storedCount,
+            storage = "sqlite",
+            source = "frontend-live-supplement"
+        });
+    });
+
 app.MapGet(
     "/api/earthquakes",
     async (
@@ -355,3 +410,19 @@ internal sealed record SyncRequest(
     DateTimeOffset? Start,
     DateTimeOffset? End,
     double? MinMagnitude);
+
+internal sealed record IngestRequest(IReadOnlyList<IngestEvent>? Events);
+
+internal sealed record IngestEvent(
+    string? Id,
+    double? Lon,
+    double? Lat,
+    double? Depth,
+    double? Mag,
+    long? Time,
+    long? Updated,
+    string? Place,
+    string? Url,
+    string? Alert,
+    int? Tsunami,
+    int? Significance);
