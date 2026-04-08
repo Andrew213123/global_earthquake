@@ -1,0 +1,647 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>全球地震时序态势 | CesiumJS 1.139.1</title>
+    <meta
+      name="description"
+      content="基于 CesiumJS 1.139.1 与 USGS GeoJSON 的全球地震实时与历史 3D 可视化网站前端原型。"
+    />
+    <link rel="stylesheet" href="./Cesium-1.139.1/Build/Cesium/Widgets/widgets.css" />
+    <link rel="stylesheet" href="./styles.css?v=20260323-progressive-1" />
+    <script>
+      window.CESIUM_BASE_URL = "./Cesium-1.139.1/Build/Cesium";
+    </script>
+    <script src="./Cesium-1.139.1/Build/Cesium/Cesium.js"></script>
+  </head>
+  <body>
+    <div class="page-shell">
+      <aside class="control-panel panel" aria-label="地震筛选与视图控制">
+        <section class="panel-section">
+          <div class="section-heading">
+            <span>Data Feed</span>
+            <h2>时间跨度</h2>
+          </div>
+          <div class="chip-grid">
+            <button class="control-chip" type="button" data-window="24h">24 小时</button>
+            <button class="control-chip" type="button" data-window="30d">30 天</button>
+            <button class="control-chip" type="button" data-window="1y">1 年</button>
+            <button class="control-chip" type="button" data-window="10y">10 年</button>
+            <button class="control-chip active" type="button" data-window="historic">
+              1949-至今
+            </button>
+          </div>
+          <div class="year-range-grid">
+            <label class="field-group" for="start-year">
+              <span>起始年</span>
+              <input id="start-year" class="field-input" type="number" min="1949" max="2026" value="1949" />
+            </label>
+            <label class="field-group" for="end-year">
+              <span>结束年</span>
+              <input id="end-year" class="field-input" type="number" min="1949" max="2026" value="2026" />
+            </label>
+          </div>
+          <button id="apply-years-button" class="inline-button" type="button">应用年份区间</button>
+          <p class="section-note">
+            通过 USGS FDSN 历史 GeoJSON 查询覆盖 1949 年至今；长时间跨度将按年份分段抓取，再在前端合并显示。
+          </p>
+          <p id="range-query-note" class="section-note accent-note">
+            当前默认查询 1949 年 1 月 1 日至今。
+          </p>
+        </section>
+
+        <section class="panel-section">
+          <div class="range-head">
+            <div class="section-heading compact">
+              <span>Magnitude Filter</span>
+              <h2>最低震级</h2>
+            </div>
+            <output id="magnitude-value" class="value-pill">M3.0+</output>
+          </div>
+          <input
+            id="magnitude-range"
+            class="magnitude-range"
+            type="range"
+            min="3"
+            max="7"
+            step="0.1"
+            value="3"
+          />
+          <div class="range-scale">
+            <span>M3</span>
+            <span>M4</span>
+            <span>M5</span>
+            <span>M7</span>
+          </div>
+          <p class="section-note accent-note">
+            当前项目仅纳入 M3.0 及以上地震数据，用于保证分析有效性与可视化性能。
+          </p>
+        </section>
+
+        <section class="panel-section">
+          <div class="section-heading">
+            <span>Country Filter</span>
+            <h2>国家/地区筛选</h2>
+          </div>
+          <div class="country-filter-stack">
+            <div class="country-toolbar">
+              <button id="country-reset-button" class="country-utility-button active" type="button">
+                全球视图
+              </button>
+              <button id="country-refocus-button" class="country-utility-button" type="button" disabled>
+                定位已选国家
+              </button>
+            </div>
+            <div id="selected-country-chipbar" class="selected-country-chipbar" aria-live="polite"></div>
+            <label class="country-search-shell" for="country-search-input">
+              <span class="country-search-icon" aria-hidden="true">⌕</span>
+              <input
+                id="country-search-input"
+                class="field-input country-search-input"
+                type="text"
+                placeholder="搜索国家/地区、English、ISO"
+                autocomplete="off"
+                spellcheck="false"
+              />
+              <button id="country-search-clear" class="country-search-clear" type="button">
+                清除
+              </button>
+            </label>
+            <div id="continent-filter-row" class="continent-filter-row" aria-label="按洲筛选"></div>
+            <div id="country-list-meta" class="country-list-meta" aria-live="polite"></div>
+            <div
+              id="country-list"
+              class="country-option-list"
+              role="listbox"
+              aria-label="国家与地区候选列表"
+            ></div>
+            <select id="country-filter" class="native-country-filter" disabled aria-hidden="true" tabindex="-1">
+              <option value="all">全部国家/地区</option>
+            </select>
+            <p id="country-filter-note" class="section-note">
+              正在加载国家边界与中文标注，可随后筛选特定国家/地区的地震目录。
+            </p>
+          </div>
+        </section>
+
+        <section class="panel-section">
+          <div class="section-heading">
+            <span>Visual Encoding</span>
+            <h2>颜色编码</h2>
+          </div>
+          <div class="segmented-grid">
+            <button class="segment-button active" type="button" data-color-mode="magnitude">
+              震级着色
+            </button>
+            <button class="segment-button" type="button" data-color-mode="depth">深度着色</button>
+          </div>
+        </section>
+
+        <section class="panel-section">
+          <div class="section-heading">
+            <span>Vertical Encoding</span>
+            <h2>3D 抬升</h2>
+          </div>
+          <div class="segmented-grid">
+            <button class="segment-button active" type="button" data-height-mode="magnitude">
+              震级抬升
+            </button>
+            <button class="segment-button" type="button" data-height-mode="depth">深度抬升</button>
+          </div>
+          <p class="section-note">深度模式是视觉编码，便于比较，不代表真实地下剖面方向。</p>
+        </section>
+
+        <section class="panel-section">
+          <div class="section-heading">
+            <span>Camera Presets</span>
+            <h2>观察预设</h2>
+          </div>
+          <div class="preset-stack">
+            <button class="preset-button active" type="button" data-focus="global">全球视野</button>
+            <button class="preset-button" type="button" data-focus="pacific">环太平洋火环</button>
+            <button class="preset-button" type="button" data-focus="eurasia">
+              地中海-喜马拉雅带
+            </button>
+            <button class="preset-button" type="button" data-focus="atlantic">
+              大西洋洋中脊
+            </button>
+          </div>
+        </section>
+
+        <section class="panel-section">
+          <div class="section-heading">
+            <span>Layer Toggles</span>
+            <h2>交互开关</h2>
+          </div>
+          <div class="toggle-stack">
+            <label class="switch-row">
+              <input id="grid-toggle" type="checkbox" checked />
+              <span>显示经纬网格</span>
+            </label>
+            <label class="switch-row">
+              <input id="boundary-toggle" type="checkbox" checked />
+              <span>显示国家/地区边界</span>
+            </label>
+          </div>
+          <div id="legend" class="legend-list" aria-live="polite"></div>
+        </section>
+      </aside>
+
+      <main class="scene-stage" aria-label="全球 3D 地球场景">
+        <div id="cesiumContainer" class="globe-canvas"></div>
+        <div class="noise-layer" aria-hidden="true"></div>
+        <div class="hud-grid" aria-hidden="true"></div>
+        <div class="orbital-ring orbital-ring-a" aria-hidden="true"></div>
+        <div class="orbital-ring orbital-ring-b" aria-hidden="true"></div>
+
+        <header class="topbar panel">
+          <div class="brand-block">
+            <p class="kicker">CESIUM SEISMIC INTELLIGENCE</p>
+            <h1>全球地震数据 3D 可视化网站</h1>
+            <p class="headline-copy">
+              基于 CesiumJS 1.139.1 与 USGS GeoJSON，展示全球地震实时与历史分布、震级层级与深度结构。
+            </p>
+          </div>
+
+          <div class="topbar-meta">
+            <div class="meta-card">
+              <span>数据源</span>
+              <strong id="data-source-label">静态历史地震目录</strong>
+            </div>
+            <div class="meta-card">
+              <span>当前时间跨度</span>
+              <strong id="active-window-label">1949 年至今</strong>
+            </div>
+            <div class="meta-card">
+              <span>数据更新时间</span>
+              <strong id="feed-updated-label">--</strong>
+            </div>
+          </div>
+
+          <div class="topbar-actions">
+            <button id="refresh-button" class="ghost-button" type="button">刷新数据</button>
+            <button id="auto-rotate-button" class="ghost-button active" type="button">
+              自动旋转
+            </button>
+          </div>
+        </header>
+
+        <footer class="bottom-bar panel">
+          <section class="command-log" aria-label="历史事件命令记录">
+            <div class="command-log-head">
+              <div class="command-log-title">
+                <span class="kicker">Operation History</span>
+                <strong>历史事件命令记录行</strong>
+              </div>
+              <div id="status-line" class="status-line" role="status" aria-live="polite">
+                正在准备加载静态历史地震目录...
+              </div>
+            </div>
+            <div
+              id="status-history"
+              class="status-history"
+              role="log"
+              aria-live="polite"
+              aria-relevant="additions text"
+            ></div>
+          </section>
+        </footer>
+        <div id="cesium-credits" class="cesium-credits-floating" aria-hidden="true"></div>
+      </main>
+
+      <aside class="insights-panel panel" aria-label="地震分析与事件详情">
+        <section class="panel-section analysis-toolbar">
+          <div class="analysis-toolbar-head">
+            <div class="section-heading">
+              <span>Analysis Console</span>
+              <h2>学术分析面板</h2>
+            </div>
+            <div class="toolbar-actions">
+              <button id="analysis-reset-button" class="ghost-button" type="button">
+                重置分析视图
+              </button>
+              <button id="analysis-export-button" class="ghost-button" type="button">
+                导出分析快照
+              </button>
+            </div>
+          </div>
+          <p id="analysis-scope" class="section-note">
+            当前右侧分析模块将与左侧筛选条件和 3D 地球中的可见事件实时同步。
+          </p>
+        </section>
+
+        <section class="panel-section analysis-overview-panel">
+          <div class="section-heading compact">
+            <span>Core Snapshot</span>
+            <h3>核心统计摘要与事件聚焦</h3>
+          </div>
+          <div class="stats-grid summary-grid analysis-kpi-grid">
+            <article class="stat-card">
+              <span>当前筛选事件总数</span>
+              <strong id="visible-count">--</strong>
+              <small>单位：条</small>
+            </article>
+            <article class="stat-card">
+              <span>平均震级</span>
+              <strong id="avg-mag">--</strong>
+              <small>单位：Mw</small>
+            </article>
+            <article class="stat-card">
+              <span>最大震级</span>
+              <strong id="strongest-mag">--</strong>
+              <small>单位：Mw</small>
+            </article>
+            <article class="stat-card">
+              <span>平均震源深度</span>
+              <strong id="avg-depth">--</strong>
+              <small>单位：km</small>
+            </article>
+          </div>
+          <div class="analysis-context-grid">
+            <article class="stat-card analysis-context-card">
+              <span>最新事件时间</span>
+              <strong id="latest-event-time">--</strong>
+              <small>当前样本中最新记录</small>
+            </article>
+            <article class="stat-card analysis-context-card">
+              <span>最强事件发生区域</span>
+              <strong id="strongest-region">--</strong>
+              <small>按当前筛选结果统计</small>
+            </article>
+          </div>
+          <article id="selected-event" class="detail-card is-empty">
+            点击地球上的地震点，或从分析图表与事件列表中选择样本，即可查看该事件的学术解释信息。
+          </article>
+          <div class="focus-module-subsection">
+            <div class="section-heading compact">
+              <span>Recent Activity</span>
+              <h3>近期事件序列</h3>
+            </div>
+            <div id="event-list" class="event-list"></div>
+          </div>
+        </section>
+
+        <section class="panel-section region-control-panel">
+          <div class="section-heading">
+            <span>Region Control Center</span>
+            <h2>地区筛选与多地区对比</h2>
+          </div>
+          <p class="section-note">
+            该模块负责国家 / 地区 / 子区域搜索、排序、浏览与对比集合构建；下方分析工作区将严格基于这里的选区生成对比结果。
+          </p>
+          <div class="hotspot-panel">
+            <div class="hotspot-toolbar">
+              <div class="hotspot-search-row">
+                <label class="hotspot-search">
+                  <input
+                    id="hotspot-search-input"
+                    class="field-input hotspot-search-input"
+                    type="search"
+                    placeholder="搜索地区 / 国家 / 子区域"
+                    autocomplete="off"
+                  />
+                </label>
+                <button id="hotspot-search-clear" class="ghost-button" type="button">清空</button>
+              </div>
+              <div class="hotspot-toolbar-actions">
+                <button id="hotspot-select-visible" class="ghost-button" type="button">
+                  全选当前列表
+                </button>
+                <button id="hotspot-clear-selection" class="ghost-button" type="button">
+                  清空多选
+                </button>
+              </div>
+              <div class="hotspot-summary-row">
+                <span id="hotspot-scope-chip" class="analysis-chip">全球国家/地区排行</span>
+                <span id="hotspot-selection-chip" class="analysis-chip">已选 0 个地区</span>
+              </div>
+              <div id="hotspot-selection-summary" class="hotspot-selection-summary empty">
+                暂未选中对比地区。可在下方榜单中勾选多个国家/地区进行横向分析。
+              </div>
+              <div id="hotspot-selection-chipbar" class="selection-chipbar"></div>
+              <div class="hotspot-sort-block">
+                <div class="section-heading compact">
+                  <span>Ranking Metric</span>
+                  <h3>地区列表排序指标</h3>
+                </div>
+                <div id="hotspot-metric-toggle" class="hotspot-metric-toggle">
+                  <button class="metric-toggle active" type="button" data-hotspot-metric="count">
+                    事件总数
+                  </button>
+                  <button class="metric-toggle" type="button" data-hotspot-metric="avgMag">
+                    平均震级
+                  </button>
+                  <button class="metric-toggle" type="button" data-hotspot-metric="maxMag">
+                    最大震级
+                  </button>
+                  <button class="metric-toggle" type="button" data-hotspot-metric="avgDepth">
+                    平均深度
+                  </button>
+                </div>
+              </div>
+            </div>
+            <div class="hotspot-ranking-header" aria-hidden="true">
+              <span>排行 / 地区</span>
+              <span>事件数</span>
+              <span>平均震级</span>
+              <span>最大震级</span>
+              <span>平均深度</span>
+            </div>
+            <div id="hotspot-ranking-meta" class="hotspot-ranking-meta"></div>
+            <div id="hotspots-list" class="rank-list hotspot-rank-list"></div>
+          </div>
+        </section>
+
+        <section class="panel-section analysis-workbench-panel">
+          <div class="section-heading">
+            <span>Comparative Analysis Workbench</span>
+            <h2>分析模块切换</h2>
+          </div>
+          <p class="section-note">
+            该工作区由上方地区控制中心驱动。选择 1 个地区时进入当前地区分析模式，选择 2 个及以上地区时进入横向对比分析模式。
+          </p>
+          <div
+            id="analysis-module-toggle"
+            class="analysis-module-toggle"
+            role="tablist"
+            aria-label="多地区分析模块切换"
+          >
+            <button class="analysis-module-button active" type="button" data-analysis-module="count">
+              事件总数
+            </button>
+            <button class="analysis-module-button" type="button" data-analysis-module="avgMag">
+              平均震级
+            </button>
+            <button class="analysis-module-button" type="button" data-analysis-module="maxMag">
+              最大震级
+            </button>
+            <button class="analysis-module-button" type="button" data-analysis-module="avgDepth">
+              平均深度
+            </button>
+            <button class="analysis-module-button" type="button" data-analysis-module="temporal">
+              时间趋势
+            </button>
+            <button class="analysis-module-button" type="button" data-analysis-module="magnitude">
+              震级分布
+            </button>
+            <button class="analysis-module-button" type="button" data-analysis-module="depth">
+              深度结构
+            </button>
+            <button class="analysis-module-button" type="button" data-analysis-module="energy">
+              能量释放
+            </button>
+          </div>
+          <div id="analysis-compare-targets" class="analysis-compare-targets"></div>
+          <div id="analysis-compare-context" class="analysis-workbench-context"></div>
+
+          <section class="panel-section analysis-module-panel" data-analysis-panel="count">
+            <div class="section-heading compact">
+              <span>Event Count Comparison</span>
+              <h3>事件总数对比</h3>
+            </div>
+            <p class="section-note">
+              比较不同地区在当前时间范围和筛选阈值下的事件总数差异，单位为条。
+            </p>
+            <div class="analysis-module-actions">
+              <button
+                class="ghost-button analysis-compare-trigger"
+                type="button"
+                data-open-compare="hotspot"
+                data-compare-metric="count"
+              >
+                在中央窗口查看对比图
+              </button>
+              <span class="analysis-compare-hint" data-compare-selection-copy>请先在上方地区控制中心选择对比地区</span>
+            </div>
+            <div id="compare-count-chart" class="analysis-chart compare-workbench-chart"></div>
+          </section>
+
+          <section class="panel-section analysis-module-panel" data-analysis-panel="avgMag" hidden>
+            <div class="section-heading compact">
+              <span>Average Magnitude Comparison</span>
+              <h3>平均震级对比</h3>
+            </div>
+            <p class="section-note">
+              比较不同地区样本总体的平均震级水平。该指标反映总体强度，不代表极值事件。
+            </p>
+            <div class="analysis-module-actions">
+              <button
+                class="ghost-button analysis-compare-trigger"
+                type="button"
+                data-open-compare="hotspot"
+                data-compare-metric="avgMag"
+              >
+                在中央窗口查看对比图
+              </button>
+              <span class="analysis-compare-hint" data-compare-selection-copy>请先在上方地区控制中心选择对比地区</span>
+            </div>
+            <div id="compare-avg-mag-chart" class="analysis-chart compare-workbench-chart"></div>
+          </section>
+
+          <section class="panel-section analysis-module-panel" data-analysis-panel="maxMag" hidden>
+            <div class="section-heading compact">
+              <span>Maximum Magnitude Comparison</span>
+              <h3>最大震级对比</h3>
+            </div>
+            <p class="section-note">
+              比较当前筛选样本范围内不同地区出现过的最大震级，并突出最高值。
+            </p>
+            <div class="analysis-module-actions">
+              <button
+                class="ghost-button analysis-compare-trigger"
+                type="button"
+                data-open-compare="hotspot"
+                data-compare-metric="maxMag"
+              >
+                在中央窗口查看对比图
+              </button>
+              <span class="analysis-compare-hint" data-compare-selection-copy>请先在上方地区控制中心选择对比地区</span>
+            </div>
+            <div id="compare-max-mag-chart" class="analysis-chart compare-workbench-chart"></div>
+          </section>
+
+          <section class="panel-section analysis-module-panel" data-analysis-panel="avgDepth" hidden>
+            <div class="section-heading compact">
+              <span>Average Depth Comparison</span>
+              <h3>平均深度对比</h3>
+            </div>
+            <p class="section-note">
+              比较不同地区样本的平均震源深度，单位为 km，可辅助理解构造环境差异。
+            </p>
+            <div class="analysis-module-actions">
+              <button
+                class="ghost-button analysis-compare-trigger"
+                type="button"
+                data-open-compare="hotspot"
+                data-compare-metric="avgDepth"
+              >
+                在中央窗口查看对比图
+              </button>
+              <span class="analysis-compare-hint" data-compare-selection-copy>请先在上方地区控制中心选择对比地区</span>
+            </div>
+            <div id="compare-avg-depth-chart" class="analysis-chart compare-workbench-chart"></div>
+          </section>
+
+          <section class="panel-section analysis-module-panel" data-analysis-panel="temporal" hidden>
+            <div class="section-heading compact">
+              <span>Temporal Analysis</span>
+              <h3>时间趋势对比</h3>
+            </div>
+            <p class="section-note">
+              比较多个地区在时间维度上的事件数量变化趋势，可进入中央窗口查看更大尺度图表与导出结果。
+            </p>
+            <div class="analysis-module-actions">
+              <button class="ghost-button analysis-compare-trigger" type="button" data-open-compare="temporal">
+                在中央窗口查看对比图
+              </button>
+              <span class="analysis-compare-hint" data-compare-selection-copy>请先在上方地区控制中心选择对比地区</span>
+            </div>
+            <div id="trend-chart" class="analysis-chart compare-workbench-chart"></div>
+          </section>
+
+          <section class="panel-section analysis-module-panel" data-analysis-panel="magnitude" hidden>
+            <div class="section-heading compact">
+              <span>Magnitude Distribution</span>
+              <h3>震级分布对比</h3>
+            </div>
+            <p class="section-note">
+              比较多个地区的震级分布结构与累计占比特征，分箱宽度与统计口径保持一致。
+            </p>
+            <div class="analysis-module-actions">
+              <button class="ghost-button analysis-compare-trigger" type="button" data-open-compare="magnitude">
+                在中央窗口查看对比图
+              </button>
+              <span class="analysis-compare-hint" data-compare-selection-copy>请先在上方地区控制中心选择对比地区</span>
+            </div>
+            <div id="magnitude-chart" class="analysis-chart compare-workbench-chart"></div>
+          </section>
+
+          <section class="panel-section analysis-module-panel" data-analysis-panel="depth" hidden>
+            <div class="section-heading compact">
+              <span>Depth Structure</span>
+              <h3>深度结构对比</h3>
+            </div>
+            <p class="section-note">
+              从浅源、中源、深源构成与震级-深度关系两个角度比较多个地区的深度结构差异。
+            </p>
+            <div class="analysis-module-actions">
+              <button class="ghost-button analysis-compare-trigger" type="button" data-open-compare="depth">
+                在中央窗口查看对比图
+              </button>
+              <span class="analysis-compare-hint" data-compare-selection-copy>请先在上方地区控制中心选择对比地区</span>
+            </div>
+            <div id="depth-chart" class="analysis-chart compare-workbench-chart"></div>
+            <div id="magnitude-depth-chart" class="analysis-chart compare-workbench-chart secondary"></div>
+          </section>
+
+          <section class="panel-section analysis-module-panel" data-analysis-panel="energy" hidden>
+            <div class="section-heading compact">
+              <span>Energy Release</span>
+              <h3>能量释放对比</h3>
+            </div>
+            <p class="section-note">
+              基于经验关系估算辐射能量，比较多个地区的累计能量释放趋势与能量预算差异。
+            </p>
+            <div class="analysis-module-actions">
+              <button class="ghost-button analysis-compare-trigger" type="button" data-open-compare="energy">
+                在中央窗口查看对比图
+              </button>
+              <span class="analysis-compare-hint" data-compare-selection-copy>请先在上方地区控制中心选择对比地区</span>
+            </div>
+            <div id="energy-chart" class="analysis-chart compare-workbench-chart"></div>
+            <div id="energy-budget" class="analysis-stack"></div>
+          </section>
+        </section>
+      </aside>
+    </div>
+
+    <div id="analysis-tooltip" class="analysis-tooltip" hidden></div>
+    <div id="country-hover-tooltip" class="country-hover-tooltip" hidden></div>
+    <div id="compare-analysis-modal" class="compare-modal" hidden>
+      <div class="compare-modal-backdrop" data-close-compare="overlay"></div>
+      <section
+        class="compare-modal-window"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="compare-modal-title"
+      >
+        <header class="compare-modal-header">
+          <div class="compare-modal-heading">
+            <span id="compare-modal-kicker" class="compare-modal-kicker">ACADEMIC COMPARISON</span>
+            <h2 id="compare-modal-title">地区分析窗口</h2>
+            <p id="compare-modal-subtitle" class="compare-modal-subtitle">
+              当前中央分析窗口将承载单地区分析图或多地区对比图，以及对应的统计说明与导出操作。
+            </p>
+          </div>
+          <div class="compare-modal-actions">
+            <div class="compare-export-group">
+              <span class="compare-export-label">图表导出</span>
+              <div class="compare-export-buttons">
+                <button id="compare-export-svg" class="ghost-button" type="button">SVG</button>
+                <button id="compare-export-png" class="ghost-button" type="button">PNG</button>
+              </div>
+            </div>
+            <div class="compare-export-group">
+              <span class="compare-export-label">数据导出</span>
+              <div class="compare-export-buttons">
+                <button id="compare-export-csv" class="ghost-button" type="button">CSV</button>
+                <button id="compare-export-json" class="ghost-button" type="button">JSON</button>
+              </div>
+            </div>
+            <button id="compare-modal-close" class="ghost-button" type="button" data-close-compare="button">
+              关闭
+            </button>
+          </div>
+        </header>
+        <div id="compare-modal-summary" class="compare-modal-summary"></div>
+        <div id="compare-modal-controls" class="compare-modal-controls"></div>
+        <div class="compare-modal-body">
+          <div id="compare-modal-chart" class="compare-modal-chart"></div>
+          <aside id="compare-modal-notes" class="compare-modal-notes"></aside>
+        </div>
+      </section>
+    </div>
+    <script src="./app.js?v=20260323-progressive-1"></script>
+  </body>
+</html>
