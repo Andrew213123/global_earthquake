@@ -4,7 +4,7 @@
 
 **Global 3D Earthquake Visualization and Analysis System Based on CesiumJS**
 
-面向全球地震活动展示、区域比较分析、教学演示、科研汇报与 GitHub Pages 在线发布的三维可视化平台。
+面向全球地震活动展示、区域比较分析、教学演示与 GitHub Pages 在线发布的三维可视化平台。
 
 <p>
   <img alt="CesiumJS" src="https://img.shields.io/badge/CesiumJS-1.139.1-0ea5e9?style=flat-square" />
@@ -19,9 +19,9 @@
 
 ## Overview
 
-**Global Earthquake** 是一个基于 **CesiumJS** 构建的全球地震三维可视化与分析系统。项目以全球尺度、长时间跨度和区域对比分析为核心，在三维地球场景中高密度呈现历史地震与最新事件，并围绕筛选后的事件集提供适用于 **课程答辩、科研汇报、论文附图、教学演示与在线展示** 的分析能力。
+**Global Earthquake** 是一个基于 **CesiumJS** 构建的全球地震三维可视化与分析系统。当前版本的重点是两件事：一是在三维地球上浏览 **1949 年至今的 M3.0+ 历史地震目录** 与最新补充事件，二是围绕筛选后的事件集提供国家/地区尺度的统计分析与图表导出能力。
 
-它不只是一个“把点绘制在地球上”的演示页面，而是将 **空间浏览、时间筛选、区域识别、统计分析、图表导出与静态部署** 整合为一体的完整工作流。
+它不只是一个“把点绘制在地球上”的演示页面，而是把 **空间浏览、时间筛选、geoBoundaries 区域归属、统计图构建、导出与 GitHub Pages 部署** 串成了一条实际可运行的工作流。
 
 ## Highlights
 
@@ -99,6 +99,11 @@
 - **多地区横向比较**
 - **中央弹窗深度分析与导出**
 
+补充说明：
+
+- 时间趋势与能量释放分析当前使用 **月 / 年** 粒度，不再提供日、周粒度，以控制浏览器端渲染压力
+- 分析结果由当前筛选后的事件集直接驱动，页面预览、中央弹窗与导出共享同一套分析数据来源
+
 ### 6. Export for Presentation and Research
 
 - 中央分析窗口支持导出：
@@ -107,11 +112,11 @@
   - `CSV`
   - `JSON`
 - 右侧控制台支持导出当前分析快照
-- 导出结果适用于：
-  - PPT 与课程答辩
-  - 学术汇报
-  - 论文附图与补充材料
-  - 教学演示
+- 导出结果主要用于：
+  - 课程展示与答辩
+  - 分析留档
+  - 汇报配图
+  - 数据复核
 
 ### 7. Dual Runtime Modes
 
@@ -231,7 +236,7 @@ http://127.0.0.1:8123
 
 ## GitHub Pages Deployment
 
-项目已适配 **GitHub Pages** 静态部署。Pages 模式下不会启动本地 `.NET` 服务，而是直接读取仓库中的静态数据与资源文件。
+项目已适配 **GitHub Pages** 静态部署，仓库内已包含 [deploy-pages.yml](.github/workflows/deploy-pages.yml)。Pages 模式下不会启动本地 `.NET` 服务，而是直接读取仓库中的静态数据与资源文件。
 
 ### Published Content
 
@@ -254,6 +259,15 @@ http://127.0.0.1:8123
 1. 打开仓库 `Settings -> Pages`
 2. 将 `Source` 设置为 `GitHub Actions`
 3. 推送到默认分支，或手动运行 Pages 工作流
+
+## Current Scope
+
+- 当前前端分析口径固定为 **M3.0 及以上** 事件；页面会自动把更低阈值钳制回 `M3.0`
+- 地区归属基于本地 `geoBoundaries` ADM0 / ADM1 数据；未落入国家边界的事件会归入 **国际海域/离岸区域**，单国家分析下未落入子区的事件会归入 **离岸/未落入行政区**
+- 时间趋势类比较当前仅保留 **月 / 年** 粒度，未提供日、周粒度
+- **GitHub Pages 静态模式** 可浏览历史目录、补充最新 USGS 事件并完成前端分析，但不会写入本地 SQLite
+- **本地服务模式** 才会启用 `/api/storage/status`、`/api/storage/catalog-sync`、`/api/storage/ingest` 等 SQLite 相关接口
+- 本仓库的启动脚本与打包脚本当前以 **Windows + PowerShell** 为主
 
 ## Data Maintenance
 
@@ -313,7 +327,7 @@ py .\scripts\build_geoboundaries_data.py
 - 时间动画回放
 - 板块边界与构造背景图层
 - 更细粒度的地区统计与专题报告生成
-- 面向研究级使用场景的专题分析流程增强
+- 面向更严肃分析场景的专题分析流程增强
 
 ## Acknowledgements
 
