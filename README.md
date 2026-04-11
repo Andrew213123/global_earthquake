@@ -15,35 +15,30 @@
 
 </div>
 
-## Overview
-
-**Global Earthquake** 是一个面向全球地震数据展示与分析的三维可视化系统，基于 **CesiumJS** 构建。项目以全球尺度、长时间跨度和区域对比分析为核心，在三维地球场景中高密度呈现历史地震与最新事件，并围绕筛选后的事件集提供可用于 **课程答辩、科研汇报、论文附图、教学演示与在线展示** 的分析能力。
-
-与仅用于“将点绘制在地球表面”的传统演示页面不同，本项目进一步整合了 **空间浏览、时间筛选、区域识别、统计分析、图表导出与静态部署**，形成了一个从全球浏览到区域研究的完整工作流。
-
 ![Global Earthquake 项目截图](docs/images/project-page.png)
 
----
+## Overview
+
+**Global Earthquake** 是一个基于 **CesiumJS** 构建的全球地震三维可视化与分析系统。项目以全球尺度、长时间跨度和区域对比分析为核心，在三维地球场景中高密度呈现历史地震与最新事件，并围绕筛选后的事件集提供适用于 **课程答辩、科研汇报、论文附图、教学演示与在线展示** 的分析能力。
+
+它不只是一个“把点绘制在地球上”的演示页面，而是将 **空间浏览、时间筛选、区域识别、统计分析、图表导出与静态部署** 整合为一体的完整工作流。
 
 ## Highlights
 
 - 基于 **CesiumJS 1.139.1** 的全球三维地球地震可视化
 - 支持 **1949 年至今** 的历史地震目录浏览
-- 支持 **最新事件 + 历史静态目录** 的混合加载模式
+- 支持 **历史静态目录 + 最新 USGS 事件** 的混合加载
 - 基于 **geoBoundaries ADM0 / ADM1** 的国家与子区域识别
 - 支持 **全中文国家 / 地区筛选与多区域对比分析**
 - 集成多类统计图表与 **SVG / PNG / CSV / JSON** 导出能力
 - 支持 **GitHub Pages 静态部署** 与 **本地 SQLite 数据仓模式** 双运行体系
-- 适用于 **大数据可视化展示、课程项目答辩、科研演示与在线项目主页**
-
----
 
 ## Features
 
 ### 1. 3D Globe Visualization
 
 - 基于 `CesiumJS 1.139.1` 构建三维地球主场景
-- 支持地震事件点的两种核心视觉编码：
+- 支持两种核心视觉编码：
   - **Magnitude Mode**：按震级着色与抬升
   - **Depth Mode**：按深度着色与抬升
 - 支持自动旋转与自由视角浏览
@@ -51,12 +46,12 @@
 - 支持多个典型地震带相机预设：
   - 全球视角
   - 环太平洋火环
-  - 地中海—喜马拉雅地震带
+  - 地中海-喜马拉雅地震带
   - 大西洋洋中脊
 
 ### 2. Temporal and Magnitude Filtering
 
-- 内置多种常用时间窗口：
+- 内置多种时间窗口：
   - `24 小时`
   - `30 天`
   - `1 年`
@@ -66,7 +61,7 @@
 - 支持最低震级阈值筛选
 - 默认聚焦 `M3.0+` 事件，以兼顾分析价值与渲染性能
 
-### 3. Country / Region Selection
+### 3. Country and Region Selection
 
 - 基于 `geoBoundaries ADM0 / ADM1` 实现国家与子区域划分
 - 支持全中文国家/地区名称展示
@@ -133,8 +128,6 @@
 - 静态目录导出
 - 同步状态追踪
 
----
-
 ## Architecture
 
 ```mermaid
@@ -160,13 +153,9 @@ flowchart LR
 4. 将筛选结果同步驱动三维地球展示与统计分析模块
 5. 将分析结果导出为适合汇报与研究的图表和数据文件
 
----
-
 ## Interface Overview
 
 ### Left Control Panel
-
-负责全局筛选与场景控制，包括：
 
 - 时间跨度控制
 - 最低震级控制
@@ -178,16 +167,12 @@ flowchart LR
 
 ### Central 3D View
 
-负责三维场景展示与运行状态反馈，包括：
-
 - 三维地球主视图
 - 顶部数据概览栏
 - 操作历史记录面板
 - 最新状态与同步反馈
 
 ### Right Analysis Panel
-
-负责区域分析、统计对比与导出，包括：
 
 - 学术分析控制台
 - SQLite 同步状态摘要
@@ -197,23 +182,14 @@ flowchart LR
 - 比较分析工作台
 - 中央弹窗导出入口
 
----
-
 ## Tech Stack
-
-### Frontend Visualization
 
 - `CesiumJS 1.139.1`
 - `HTML / CSS / JavaScript`
-
-### Local Service and Data Management
-
 - `.NET`
 - `SQLite`
 - `PowerShell`
 - `Python`
-
----
 
 ## Data Sources
 
@@ -221,8 +197,6 @@ flowchart LR
 - `geoBoundaries` 全球行政边界数据
 - 本地静态历史目录 `data/catalog`
 - 本地边界目录 `data/geoboundaries`
-
----
 
 ## Quick Start
 
@@ -255,8 +229,6 @@ http://127.0.0.1:8123
 - 提供静态页面服务
 - 连接本地 SQLite 数据仓
 
----
-
 ## GitHub Pages Deployment
 
 项目已适配 **GitHub Pages** 静态部署。Pages 模式下不会启动本地 `.NET` 服务，而是直接读取仓库中的静态数据与资源文件。
@@ -283,8 +255,6 @@ http://127.0.0.1:8123
 2. 将 `Source` 设置为 `GitHub Actions`
 3. 推送到默认分支，或手动运行 Pages 工作流
 
----
-
 ## Data Maintenance
 
 ### Export Static Historical Catalog
@@ -300,8 +270,6 @@ py .\scripts\build_geoboundaries_data.py
 ```
 
 该脚本用于整理本地 `ADM0 / ADM1` 边界、名称映射与清洗后的行政区数据。
-
----
 
 ## Project Structure
 
@@ -321,8 +289,6 @@ py .\scripts\build_geoboundaries_data.py
 └─ docs/images/                   # README 配图等文档资源
 ```
 
----
-
 ## Use Cases
 
 - 全球地震活动时空分布展示
@@ -332,8 +298,6 @@ py .\scripts\build_geoboundaries_data.py
 - 学术汇报配图与数据导出
 - GitHub Pages 在线可视化项目主页
 
----
-
 ## Current Strengths
 
 - 可直接浏览 **1949 年至今** 的全球地震历史目录
@@ -341,13 +305,8 @@ py .\scripts\build_geoboundaries_data.py
 - 国家与地区名称已统一接入中文展示体系
 - 分析系统已从信息卡片升级为可导出图表的分析工作台
 - 同时具备静态部署与本地数据仓双模式运行能力
-- 兼顾教学展示、科研表达与在线部署价值
-
----
 
 ## Roadmap
-
-后续可继续扩展的方向包括：
 
 - 更丰富的专题分析模块
 - 更强的导出模板与批量导出能力
@@ -356,23 +315,8 @@ py .\scripts\build_geoboundaries_data.py
 - 更细粒度的地区统计与专题报告生成
 - 面向研究级使用场景的专题分析流程增强
 
----
-
 ## Acknowledgements
 
 - USGS Earthquake Catalog
 - geoBoundaries
 - CesiumJS
-
----
-
-## Conclusion
-
-如果希望将本项目继续推进为更完整的 **研究级地震分析平台**，下一阶段最值得优先完善的方向包括：
-
-- 分析窗口交互增强
-- 导出模板规范化
-- 专题统计模块补充
-- 静态目录与本地 SQLite 数据仓一致性维护
-
-这些增强将进一步提升项目在 **大数据可视化、教学演示、科研汇报、在线展示与区域灾害分析** 等方面的综合价值。
