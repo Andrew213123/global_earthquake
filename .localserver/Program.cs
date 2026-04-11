@@ -395,7 +395,9 @@ app.UseStaticFiles(new StaticFileOptions
         var extension = Path.GetExtension(path);
         if (extension.Equals(".html", StringComparison.OrdinalIgnoreCase) ||
             extension.Equals(".js", StringComparison.OrdinalIgnoreCase) ||
-            extension.Equals(".css", StringComparison.OrdinalIgnoreCase))
+            extension.Equals(".css", StringComparison.OrdinalIgnoreCase) ||
+            extension.Equals(".json", StringComparison.OrdinalIgnoreCase) ||
+            extension.Equals(".geojson", StringComparison.OrdinalIgnoreCase))
         {
             context.Context.Response.Headers.CacheControl = "no-store, no-cache, must-revalidate";
             context.Context.Response.Headers.Pragma = "no-cache";

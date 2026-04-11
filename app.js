@@ -162,6 +162,38 @@ const COMPARE_MODAL_REGION_LIMITS = {
   hotspot: 14,
 };
 
+const COMPARE_SURFACE_REGION_STRATEGY = {
+  temporal: {
+    previewLimit: 4,
+    modalPanelSize: 6,
+    exportPanelSize: 6,
+  },
+  magnitude: {
+    previewLimit: 4,
+    modalPanelSize: 5,
+    exportPanelSize: 5,
+  },
+  depth: {
+    previewLimit: 5,
+    modalPanelSize: 10,
+    exportPanelSize: 12,
+  },
+  energy: {
+    previewLimit: 4,
+    modalPanelSize: 6,
+    exportPanelSize: 6,
+  },
+  hotspot: {
+    previewLimit: 6,
+    modalPanelSize: 12,
+    exportPanelSize: 16,
+  },
+};
+
+const ACADEMIC_FIGURE_FONT_STACK =
+  "'Segoe UI Variable Text', 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', 'Noto Sans SC', sans-serif";
+const SUPPORTED_COMPARE_TIME_GRANULARITIES = new Set(["auto", "month", "year"]);
+
 const COMPARE_REGION_PALETTE = [
   "#1f77b4",
   "#d95f02",
@@ -323,20 +355,25 @@ const COUNTRY_NAME_ZH_BY_NORMALIZED_NAME = {
   micronesia: "密克罗尼西亚",
   moldova: "摩尔多瓦",
   myanmar: "缅甸",
+  "north korea": "朝鲜",
   palestine: "巴勒斯坦",
   "papua new guinea": "巴布亚新几内亚",
   "puerto rico": "波多黎各",
+  "republic of korea": "韩国",
   reunion: "留尼汪",
   russia: "俄罗斯",
   "saint barthelemy": "圣巴泰勒米",
   "saint helena": "圣赫勒拿",
   "saint martin": "法属圣马丁",
+  "south korea": "韩国",
   slovakia: "斯洛伐克",
   slovenia: "斯洛文尼亚",
   "solomon islands": "所罗门群岛",
   syria: "叙利亚",
   taiwan: "中国台湾",
   tanzania: "坦桑尼亚",
+  "democratic peoples republic of korea": "朝鲜",
+  "democratic people's republic of korea": "朝鲜",
   timor: "东帝汶",
   turkey: "土耳其",
   venezuela: "委内瑞拉",
@@ -802,6 +839,8 @@ const dom = {
 document.addEventListener("DOMContentLoaded", initApp);
 
 async function initApp() {
+  state.compareTemporalGranularity = normalizeCompareTimeGranularity(state.compareTemporalGranularity);
+  state.compareEnergyGranularity = normalizeCompareTimeGranularity(state.compareEnergyGranularity);
   applyTimePreset(state.activeWindow, { silent: true });
   restoreStatusHistory();
   renderStatusHistory();
@@ -2105,17 +2144,16 @@ function bindEvents() {
     setActiveAnalysisModule(nextModule);
   });
 
-  document.querySelectorAll("[data-open-compare]").forEach((button) => {
-    button.addEventListener("click", () => {
-      const moduleKey = button.getAttribute("data-open-compare");
-      const metricKey = button.getAttribute("data-compare-metric");
-      if (metricKey && HOTSPOT_COMPARE_METRICS[metricKey]) {
-        state.hotspotCompareMetric = metricKey;
-      }
-      if (moduleKey) {
-        openCompareAnalysisModal(moduleKey);
-      }
-    });
+  document.addEventListener("click", (event) => {
+    const trigger = event.target.closest("[data-open-compare]");
+    if (!trigger) {
+      return;
+    }
+    if (trigger.disabled) {
+      return;
+    }
+    event.preventDefault();
+    handleOpenCompareTrigger(trigger);
   });
 
   dom.compareModal?.addEventListener("click", (event) => {
@@ -4148,7 +4186,7 @@ async function loadSubdivisionManifest() {
   }
 
   state.subdivisionManifestPromise = fetch(SUBDIVISION_MANIFEST_URL, {
-    cache: "force-cache",
+    cache: "no-store",
     headers: { Accept: "application/json" },
   })
     .then(async (response) => {
@@ -4219,7 +4257,7 @@ async function loadSubdivisionDatasetByIso(isoCode) {
       }
 
       const response = await fetch(buildSubdivisionDataUrl(entry.path), {
-        cache: "force-cache",
+        cache: "no-store",
         headers: { Accept: "application/geo+json, application/json" },
       });
       if (!response.ok) {
@@ -4372,7 +4410,7 @@ async function ensureSubdivisionDatasetForCountry(countryKey) {
 async function loadBoundaryOverlay() {
   try {
     const response = await fetch(BOUNDARY_LAYER_URL, {
-      cache: "force-cache",
+      cache: "no-store",
       headers: { Accept: "application/geo+json, application/json" },
     });
     if (!response.ok) {
@@ -4593,6 +4631,31 @@ function renderAnalysisCompareHeader() {
   }
 }
 
+function buildWorkbenchSummaryItems(summaryItems, limit = getFigureSurfaceMeta("preview").summaryLimit) {
+  const items = Array.isArray(summaryItems) ? summaryItems : [];
+  if (items.length <= limit) {
+    return items;
+  }
+  return [
+    ...items.slice(0, Math.max(1, limit - 1)),
+    { label: "更多口径", value: "中央窗口查看" },
+  ];
+}
+
+function buildWorkbenchNotes(notes, limit = getFigureSurfaceMeta("preview").noteLimit) {
+  const items = Array.isArray(notes) ? notes.filter(Boolean) : [];
+  if (items.length <= limit) {
+    return items.slice(0, limit);
+  }
+  if (limit <= 1) {
+    return ["页面预览仅保留摘要说明；中央分析窗口与导出图保留完整统计说明。"];
+  }
+  return [
+    ...items.slice(0, Math.max(1, limit - 1)),
+    "页面预览仅保留摘要说明；中央分析窗口与导出图保留完整统计说明。",
+  ];
+}
+
 function renderAnalysisWorkbenchPayload(targetElement, payload, emptyTitle) {
   if (!targetElement) {
     return;
@@ -4608,16 +4671,26 @@ function renderAnalysisWorkbenchPayload(targetElement, payload, emptyTitle) {
     return;
   }
 
+  const previewSurfaceMeta = getFigureSurfaceMeta("preview");
+  const workbenchSummaryItems = buildWorkbenchSummaryItems(
+    payload.summaryItems || [],
+    payload.previewSummaryLimit || previewSurfaceMeta.summaryLimit
+  );
+  const workbenchNotes = buildWorkbenchNotes(
+    payload.notes || [],
+    payload.previewNoteLimit || previewSurfaceMeta.noteLimit
+  );
+
   targetElement.innerHTML = `
     <div class="compare-workbench-shell">
       <div class="compare-workbench-summary">
-        ${renderCompareSummaryChips(payload.summaryItems || [])}
+        ${renderCompareSummaryChips(workbenchSummaryItems)}
       </div>
       <div class="compare-workbench-figure-shell">
         ${payload.previewSvg || payload.figureSvg || ""}
       </div>
       <div class="compare-workbench-notes">
-        ${renderCompareNotes((payload.notes || []).slice(0, payload.previewNoteLimit || 2))}
+        ${renderCompareNotes(workbenchNotes)}
       </div>
     </div>
   `;
@@ -4636,7 +4709,7 @@ function renderHotspotMetricWorkbench(metricKey, targetElement) {
   }
   const previousMetric = state.hotspotCompareMetric;
   state.hotspotCompareMetric = metricKey;
-  const context = buildCompareRegionContext("hotspot");
+  const context = buildCompareRegionContext("hotspot", { surface: "preview" });
   const payload = buildHotspotCompareModal(context, { surface: "preview" });
   renderAnalysisWorkbenchPayload(
     targetElement,
@@ -4657,7 +4730,7 @@ function renderCompareWorkbenchChart(moduleKey, targetElement) {
     );
     return;
   }
-  const context = buildCompareRegionContext(moduleKey);
+  const context = buildCompareRegionContext(moduleKey, { surface: "preview" });
   const payload = buildCompareModalPayload(moduleKey, context, { surface: "preview" });
   renderAnalysisWorkbenchPayload(
     targetElement,
@@ -7584,6 +7657,17 @@ function openCompareAnalysisModal(moduleKey) {
   );
 }
 
+function handleOpenCompareTrigger(trigger) {
+  const moduleKey = trigger.getAttribute("data-open-compare");
+  const metricKey = trigger.getAttribute("data-compare-metric");
+  if (metricKey && HOTSPOT_COMPARE_METRICS[metricKey]) {
+    state.hotspotCompareMetric = metricKey;
+  }
+  if (moduleKey) {
+    openCompareAnalysisModal(moduleKey);
+  }
+}
+
 function closeCompareAnalysisModal(options = {}) {
   if (!state.compareModalOpen && dom.compareModal?.hidden !== false) {
     return;
@@ -7631,7 +7715,7 @@ function applyCompareControlValue(controlName, rawValue) {
 
   switch (controlName) {
     case "compareTemporalGranularity":
-      state.compareTemporalGranularity = String(nextValue);
+      state.compareTemporalGranularity = normalizeCompareTimeGranularity(nextValue);
       break;
     case "compareTemporalShowAverage":
       state.compareTemporalShowAverage = Boolean(nextValue);
@@ -7643,7 +7727,7 @@ function applyCompareControlValue(controlName, rawValue) {
       state.compareDepthMode = String(nextValue);
       break;
     case "compareEnergyGranularity":
-      state.compareEnergyGranularity = String(nextValue);
+      state.compareEnergyGranularity = normalizeCompareTimeGranularity(nextValue);
       break;
     case "compareEnergyScale":
       state.compareEnergyScale = String(nextValue);
@@ -7667,7 +7751,7 @@ function renderCompareAnalysisModal() {
   }
 
   clearCompareAnalysisTargets();
-  const context = buildCompareRegionContext(state.compareModalModule);
+  const context = buildCompareRegionContext(state.compareModalModule, { surface: "modal" });
   if (context.allRegions.length < 1) {
     state.compareModalRender = null;
     renderCompareModalShell({
@@ -7689,7 +7773,13 @@ function renderCompareAnalysisModal() {
   }
 
   const payload = buildCompareModalPayload(state.compareModalModule, context, { surface: "modal" });
-  state.compareModalRender = payload;
+  state.compareModalRender = {
+    ...payload,
+    surface: "modal",
+    regionCount: context.allRegions.length,
+    panelCount: context.regionPanels.length,
+    previewLimited: false,
+  };
   renderCompareModalShell(payload);
 }
 
@@ -7814,25 +7904,82 @@ function buildAnalysisModeMeta(context) {
 function getFigureSurfaceMeta(surface = "modal") {
   if (surface === "preview") {
     return {
+      surface,
       variant: "previewDark",
       compact: true,
+      interactive: true,
       noteLimit: 2,
-      summaryLimit: 3,
+      summaryLimit: 4,
+      paddingX: 28,
+      paddingTop: 26,
+      sectionGap: 14,
+      titleGap: 8,
+      kickerGap: 8,
+      panelGap: 22,
+      panelTitleGap: 20,
+      bottomPadding: 24,
+      legendSideThreshold: 2,
+      legendSideWidth: 220,
+      legendMinItemWidth: 122,
+      legendRowGap: 10,
+      legendItemGap: 10,
+      summaryMinWidth: 112,
+      summaryMaxWidth: 220,
+      summaryGap: 10,
+      summaryRowGap: 10,
     };
   }
   if (surface === "export") {
     return {
+      surface,
       variant: "exportLight",
       compact: false,
-      noteLimit: 3,
-      summaryLimit: 6,
+      interactive: false,
+      noteLimit: 6,
+      summaryLimit: 12,
+      paddingX: 64,
+      paddingTop: 42,
+      sectionGap: 24,
+      titleGap: 10,
+      kickerGap: 10,
+      panelGap: 34,
+      panelTitleGap: 28,
+      bottomPadding: 48,
+      legendSideThreshold: 5,
+      legendSideWidth: 320,
+      legendMinItemWidth: 176,
+      legendRowGap: 12,
+      legendItemGap: 16,
+      summaryMinWidth: 148,
+      summaryMaxWidth: 296,
+      summaryGap: 14,
+      summaryRowGap: 12,
     };
   }
   return {
+    surface,
     variant: "modalDark",
     compact: false,
+    interactive: true,
     noteLimit: 4,
-    summaryLimit: 6,
+    summaryLimit: 8,
+    paddingX: 56,
+    paddingTop: 34,
+    sectionGap: 20,
+    titleGap: 10,
+    kickerGap: 10,
+    panelGap: 30,
+    panelTitleGap: 24,
+    bottomPadding: 38,
+    legendSideThreshold: 4,
+    legendSideWidth: 300,
+    legendMinItemWidth: 164,
+    legendRowGap: 12,
+    legendItemGap: 14,
+    summaryMinWidth: 138,
+    summaryMaxWidth: 280,
+    summaryGap: 12,
+    summaryRowGap: 12,
   };
 }
 
@@ -7852,10 +7999,10 @@ function buildCompareModalPayload(moduleKey, context, options = {}) {
   }
 }
 
-function buildCompareRegionContext(moduleKey) {
-  const allRegions = getSelectedCompareRegions();
-  const maxRegions = COMPARE_MODAL_REGION_LIMITS[moduleKey] || 8;
-  const visibleRegions = allRegions.slice(0, maxRegions).map((region, index) => {
+function buildCompareRegionContext(moduleKey, options = {}) {
+  const surface = options.surface || "modal";
+  const selectedRegions = getSelectedCompareRegions();
+  const allRegions = selectedRegions.map((region, index) => {
     const style = getRegionComparisonStyle(region.key, index);
     const events = region.eventIds.map((eventId) => state.eventById.get(eventId)).filter(Boolean);
     return {
@@ -7867,14 +8014,47 @@ function buildCompareRegionContext(moduleKey) {
       sampleWarning: events.length > 0 && events.length < 20,
     };
   });
+  const strategy = COMPARE_SURFACE_REGION_STRATEGY[moduleKey] || {};
+  let visibleRegions = allRegions;
+  let hiddenCount = 0;
+  let regionPanels = [];
+
+  if (surface === "preview") {
+    const previewLimit = strategy.previewLimit || COMPARE_MODAL_REGION_LIMITS[moduleKey] || 8;
+    visibleRegions = allRegions.slice(0, previewLimit);
+    hiddenCount = Math.max(0, allRegions.length - visibleRegions.length);
+    regionPanels = visibleRegions.length ? [visibleRegions] : [];
+  } else {
+    const panelSize =
+      surface === "export"
+        ? strategy.exportPanelSize || strategy.modalPanelSize || allRegions.length || 1
+        : strategy.modalPanelSize || allRegions.length || 1;
+    regionPanels = chunkCompareRegions(allRegions, panelSize);
+  }
 
   return {
+    surface,
     allRegions,
     visibleRegions,
-    hiddenCount: Math.max(0, allRegions.length - visibleRegions.length),
-    totalEvents: visibleRegions.reduce((sum, region) => sum + region.events.length, 0),
-    lowSampleRegions: visibleRegions.filter((region) => region.sampleWarning),
+    hiddenCount,
+    totalEvents: allRegions.reduce((sum, region) => sum + region.events.length, 0),
+    lowSampleRegions: allRegions.filter((region) => region.sampleWarning),
+    regionPanels: regionPanels.length ? regionPanels : visibleRegions.length ? [visibleRegions] : [],
+    panelCount: regionPanels.length || (visibleRegions.length ? 1 : 0),
+    previewLimited: surface === "preview" && hiddenCount > 0,
   };
+}
+
+function chunkCompareRegions(regions, panelSize) {
+  if (!regions.length) {
+    return [];
+  }
+  const safePanelSize = Math.max(1, panelSize || regions.length);
+  const panels = [];
+  for (let index = 0; index < regions.length; index += safePanelSize) {
+    panels.push(regions.slice(index, index + safePanelSize));
+  }
+  return panels;
 }
 
 function getRegionComparisonStyle(regionKey, index = 0) {
@@ -7894,16 +8074,16 @@ function getRegionComparisonStyle(regionKey, index = 0) {
 }
 
 function buildCompareControlGroups(moduleKey) {
+  const temporalGranularity = normalizeCompareTimeGranularity(state.compareTemporalGranularity);
+  const energyGranularity = normalizeCompareTimeGranularity(state.compareEnergyGranularity);
   switch (moduleKey) {
     case "temporal":
       return [
         {
           label: "时间粒度",
           control: "compareTemporalGranularity",
-          options: buildCompareOptions(state.compareTemporalGranularity, [
+          options: buildCompareOptions(temporalGranularity, [
             ["auto", "自动"],
-            ["day", "日"],
-            ["week", "周"],
             ["month", "月"],
             ["year", "年"],
           ]),
@@ -7945,7 +8125,7 @@ function buildCompareControlGroups(moduleKey) {
         {
           label: "时间粒度",
           control: "compareEnergyGranularity",
-          options: buildCompareOptions(state.compareEnergyGranularity, [
+          options: buildCompareOptions(energyGranularity, [
             ["auto", "自动"],
             ["month", "月"],
             ["year", "年"],
@@ -7986,6 +8166,14 @@ function buildCompareOptions(activeValue, tuples) {
   }));
 }
 
+function normalizeCompareTimeGranularity(value, fallback = "auto") {
+  const normalized = String(value || fallback).toLowerCase();
+  if (normalized === "day" || normalized === "week") {
+    return "month";
+  }
+  return SUPPORTED_COMPARE_TIME_GRANULARITIES.has(normalized) ? normalized : fallback;
+}
+
 function buildCompareEmptyPayload(title, context, controlGroups, message) {
   return {
     title,
@@ -8002,8 +8190,21 @@ function buildCompareEmptyPayload(title, context, controlGroups, message) {
   };
 }
 
-function buildCompareSummaryItems(context, extraItems = []) {
+function buildCompareSummaryItems(context, extraItems = [], options = {}) {
   const modeMeta = buildAnalysisModeMeta(context);
+  const coverageItems =
+    options.includeCoverage === false
+      ? []
+      : [
+          {
+            label: "图幅策略",
+            value: context.previewLimited
+              ? `预览 ${formatNumber(context.visibleRegions.length)} / ${formatNumber(context.allRegions.length)}`
+              : context.regionPanels.length > 1
+                ? `${formatNumber(context.regionPanels.length)} 个 panel / ${formatNumber(context.allRegions.length)} 个地区`
+                : `完整显示 ${formatNumber(context.allRegions.length)} 个地区`,
+          },
+        ];
   return [
     { label: "时间范围", value: state.rangeLabel },
     {
@@ -8013,6 +8214,7 @@ function buildCompareSummaryItems(context, extraItems = []) {
         : `${formatNumber(context.allRegions.length)} 个`,
     },
     { label: "当前国家范围", value: getCountryDisplayNameByKey(state.activeCountryKey) },
+    ...coverageItems,
     ...extraItems,
   ];
 }
@@ -8023,14 +8225,19 @@ function buildCompareSubtitle(context, suffix) {
 }
 
 function buildCompareFigureRegionCaption(context) {
-  const names = context.visibleRegions.map((region) => region.displayName);
+  const names = context.allRegions.map((region) => region.displayName);
   if (!names.length) {
     return "未选中地区";
   }
-  if (names.length <= 4 && !context.hiddenCount) {
+  if (context.regionPanels?.length > 1) {
+    return `地区：已选 ${formatNumber(context.allRegions.length)} 个地区，按 ${formatNumber(
+      context.regionPanels.length
+    )} 个 panel 完整展开`;
+  }
+  if (names.length <= 4) {
     return `地区：${names.join("、")}`;
   }
-  return `地区：${names.slice(0, 4).join("、")}${context.hiddenCount ? ` 等 ${formatNumber(context.allRegions.length)} 个地区` : ""}`;
+  return `地区：${names.slice(0, 4).join("、")} 等，共 ${formatNumber(context.allRegions.length)} 个地区`;
 }
 
 function createFigureFrame(width, height, left, right, top, bottom) {
@@ -8040,6 +8247,163 @@ function createFigureFrame(width, height, left, right, top, bottom) {
     width: width - left - right,
     height: height - top - bottom,
   };
+}
+
+function getAcademicTextMeasurer() {
+  if (typeof document === "undefined") {
+    return null;
+  }
+  if (!getAcademicTextMeasurer.canvas) {
+    getAcademicTextMeasurer.canvas = document.createElement("canvas");
+    getAcademicTextMeasurer.context = getAcademicTextMeasurer.canvas.getContext("2d");
+  }
+  return getAcademicTextMeasurer.context || null;
+}
+
+function measureAcademicText(value, options = {}) {
+  const text = String(value || "");
+  if (!text) {
+    return 0;
+  }
+  const fontSize = Number(options.fontSize) || 12;
+  const fontWeight = options.fontWeight || 400;
+  const fontFamily = options.fontFamily || ACADEMIC_FIGURE_FONT_STACK;
+  const context2d = getAcademicTextMeasurer();
+  if (!context2d) {
+    return text.length * fontSize * 0.58;
+  }
+  context2d.font = `${fontWeight} ${fontSize}px ${fontFamily}`;
+  return context2d.measureText(text).width;
+}
+
+function tokenizeAcademicText(value) {
+  return String(value || "").match(/[\u4e00-\u9fff]|[^\s\u4e00-\u9fff]+|\s+/g) || [];
+}
+
+function wrapAcademicText(value, maxWidth, options = {}) {
+  const text = String(value || "").trim();
+  if (!text) {
+    return [];
+  }
+  if (!Number.isFinite(maxWidth) || maxWidth <= 0) {
+    return [text];
+  }
+
+  const tokens = tokenizeAcademicText(text);
+  const lines = [];
+  let currentLine = "";
+
+  const pushLine = () => {
+    const safeLine = currentLine.trim();
+    if (safeLine) {
+      lines.push(safeLine);
+    }
+    currentLine = "";
+  };
+
+  const appendToken = (token) => {
+    const candidate = `${currentLine}${token}`;
+    if (!currentLine || measureAcademicText(candidate, options) <= maxWidth) {
+      currentLine = candidate;
+      return;
+    }
+
+    if (token.trim() && measureAcademicText(token, options) > maxWidth) {
+      [...token].forEach((character) => {
+        const charCandidate = `${currentLine}${character}`;
+        if (currentLine && measureAcademicText(charCandidate, options) > maxWidth) {
+          pushLine();
+          currentLine = character;
+        } else {
+          currentLine = charCandidate;
+        }
+      });
+      return;
+    }
+
+    pushLine();
+    currentLine = token.trim() ? token : "";
+  };
+
+  tokens.forEach(appendToken);
+  pushLine();
+  return lines.length ? lines : [text];
+}
+
+function truncateAcademicText(value, maxWidth, options = {}) {
+  const text = String(value || "");
+  if (!text || !Number.isFinite(maxWidth) || maxWidth <= 0) {
+    return text;
+  }
+  if (measureAcademicText(text, options) <= maxWidth) {
+    return text;
+  }
+  const ellipsis = "...";
+  let truncated = text;
+  while (truncated.length > 1 && measureAcademicText(`${truncated}${ellipsis}`, options) > maxWidth) {
+    truncated = truncated.slice(0, -1);
+  }
+  return `${truncated}${ellipsis}`;
+}
+
+function buildSvgStyle(properties = {}) {
+  return Object.entries(properties)
+    .filter(([, value]) => value != null && value !== "")
+    .map(([key, value]) => `${key}:${String(value).replaceAll("\n", " ").trim()}`)
+    .join(";");
+}
+
+function buildSvgFontStyle(options = {}) {
+  return buildSvgStyle({
+    fill: options.fill,
+    "font-family": options.fontFamily || ACADEMIC_FIGURE_FONT_STACK,
+    "font-size": options.fontSize ? `${options.fontSize}px` : null,
+    "font-weight": options.fontWeight || null,
+    "letter-spacing": options.letterSpacing != null ? `${options.letterSpacing}em` : null,
+    "text-transform": options.textTransform || null,
+    opacity: options.opacity != null ? options.opacity : null,
+  });
+}
+
+function measureTextLines(lines, options = {}) {
+  const safeLines = Array.isArray(lines) ? lines.filter(Boolean) : [];
+  const fontSize = Number(options.fontSize) || 12;
+  const lineHeight = options.lineHeight || fontSize * 1.34;
+  return {
+    width: safeLines.reduce((maxWidth, line) => Math.max(maxWidth, measureAcademicText(line, options)), 0),
+    height: safeLines.length ? lineHeight * (safeLines.length - 1) + fontSize : 0,
+    lineHeight,
+  };
+}
+
+function buildSvgTextMarkup(lines, x, y, options = {}) {
+  const safeLines = Array.isArray(lines) ? lines.filter(Boolean) : [];
+  if (!safeLines.length) {
+    return "";
+  }
+  const fontSize = Number(options.fontSize) || 12;
+  const lineHeight = options.lineHeight || fontSize * 1.34;
+  const anchor = options.textAnchor || "start";
+  const dominantBaseline = options.dominantBaseline || "alphabetic";
+  const style = escapeAttribute(buildSvgFontStyle(options));
+  const transform = options.transform ? ` transform="${escapeAttribute(options.transform)}"` : "";
+  const extraAttributes = options.extraAttributes ? ` ${options.extraAttributes}` : "";
+  return `
+    <text
+      x="${x.toFixed(2)}"
+      y="${y.toFixed(2)}"
+      text-anchor="${anchor}"
+      dominant-baseline="${dominantBaseline}"
+      style="${style}"${transform}${extraAttributes}
+    >
+      ${safeLines
+        .map((line, index) => {
+          const dy = index === 0 ? 0 : lineHeight;
+          return `<tspan x="${x.toFixed(2)}" dy="${dy.toFixed(2)}">${escapeHtml(line)}</tspan>`;
+        })
+        .join("")}
+    </text>
+  `;
 }
 
 function buildEvenlySpacedIndices(length, maxLabels = 6) {
@@ -8058,18 +8422,43 @@ function buildEvenlySpacedIndices(length, maxLabels = 6) {
   return [...indices].sort((left, right) => left - right);
 }
 
+function buildAdaptiveEvenlySpacedIndices(labels, plotWidth, textOptions = {}, maxLabels = 8, minGap = 18) {
+  if (!labels?.length) {
+    return [];
+  }
+  const maxLabelWidth = labels.reduce(
+    (maxWidth, label) => Math.max(maxWidth, measureAcademicText(label, textOptions)),
+    0
+  );
+  const capacity = Math.max(2, Math.min(maxLabels, Math.floor(plotWidth / Math.max(24, maxLabelWidth + minGap))));
+  return buildEvenlySpacedIndices(labels.length, capacity);
+}
+
 function buildAcademicGridLines(plotFrame, ticks, minValue, maxValue, options = {}) {
   const formatter = options.tickFormatter || ((tick) => String(tick));
+  const theme = options.theme || getAcademicFigureTheme(options.variant || "modalDark");
+  const fontOptions = options.fontOptions || {
+    fill: theme.subtle,
+    fontSize: options.compact ? 10.5 : 12,
+    fontWeight: 500,
+  };
   return ticks
     .map((tick) => {
       const y = plotFrame.top + plotFrame.height - scaleLinear(tick, minValue, maxValue, 0, plotFrame.height);
       return `
-        <line class="figure-grid-line" x1="${plotFrame.left}" y1="${y.toFixed(2)}" x2="${(plotFrame.left + plotFrame.width).toFixed(
-          2
-        )}" y2="${y.toFixed(2)}"></line>
-        <text class="figure-axis-text" x="${(plotFrame.left - 12).toFixed(2)}" y="${(y + 4).toFixed(
-          2
-        )}" text-anchor="end">${escapeHtml(formatter(tick))}</text>
+        <line
+          x1="${plotFrame.left}"
+          y1="${y.toFixed(2)}"
+          x2="${(plotFrame.left + plotFrame.width).toFixed(2)}"
+          y2="${y.toFixed(2)}"
+          stroke="${theme.grid}"
+          stroke-width="${options.gridWidth || 1}"
+          stroke-dasharray="${options.gridDash || (options.compact ? "3 5" : "4 6")}"
+        ></line>
+        ${buildSvgTextMarkup([formatter(tick)], plotFrame.left - (options.labelOffset || 12), y + 4, {
+          ...fontOptions,
+          textAnchor: "end",
+        })}
       `;
     })
     .join("");
@@ -8077,36 +8466,48 @@ function buildAcademicGridLines(plotFrame, ticks, minValue, maxValue, options = 
 
 function buildAcademicGridLinesHorizontal(plotFrame, ticks, minValue, maxValue, options = {}) {
   const formatter = options.tickFormatter || ((tick) => String(tick));
+  const theme = options.theme || getAcademicFigureTheme(options.variant || "modalDark");
+  const fontOptions = options.fontOptions || {
+    fill: theme.subtle,
+    fontSize: options.compact ? 10.5 : 12,
+    fontWeight: 500,
+  };
   return ticks
     .map((tick) => {
       const x = plotFrame.left + scaleLinear(tick, minValue, maxValue, 0, plotFrame.width);
       return `
-        <line class="figure-grid-line" x1="${x.toFixed(2)}" y1="${plotFrame.top}" x2="${x.toFixed(2)}" y2="${(
-          plotFrame.top + plotFrame.height
-        ).toFixed(2)}"></line>
-        <text class="figure-axis-text" x="${x.toFixed(2)}" y="${(plotFrame.top + plotFrame.height + 28).toFixed(
-          2
-        )}" text-anchor="middle">${escapeHtml(formatter(tick))}</text>
+        <line
+          x1="${x.toFixed(2)}"
+          y1="${plotFrame.top}"
+          x2="${x.toFixed(2)}"
+          y2="${(plotFrame.top + plotFrame.height).toFixed(2)}"
+          stroke="${theme.grid}"
+          stroke-width="${options.gridWidth || 1}"
+          stroke-dasharray="${options.gridDash || (options.compact ? "3 5" : "4 6")}"
+        ></line>
+        ${buildSvgTextMarkup([formatter(tick)], x, plotFrame.top + plotFrame.height + (options.labelOffsetY || 28), {
+          ...fontOptions,
+          textAnchor: "middle",
+        })}
       `;
     })
     .join("");
 }
 
-function buildAcademicXAxisLine(plotFrame) {
-  return `<line class="figure-axis-line" x1="${plotFrame.left}" y1="${(plotFrame.top + plotFrame.height).toFixed(
-    2
-  )}" x2="${(plotFrame.left + plotFrame.width).toFixed(2)}" y2="${(plotFrame.top + plotFrame.height).toFixed(
-    2
-  )}"></line>`;
+function buildAcademicXAxisLine(plotFrame, theme = getAcademicFigureTheme("modalDark")) {
+  return `<line x1="${plotFrame.left}" y1="${(plotFrame.top + plotFrame.height).toFixed(2)}" x2="${(
+    plotFrame.left + plotFrame.width
+  ).toFixed(2)}" y2="${(plotFrame.top + plotFrame.height).toFixed(2)}" stroke="${theme.axis}" stroke-width="1.2"></line>`;
 }
 
-function buildAcademicYAxisLine(plotFrame) {
-  return `<line class="figure-axis-line" x1="${plotFrame.left}" y1="${plotFrame.top}" x2="${plotFrame.left}" y2="${(
+function buildAcademicYAxisLine(plotFrame, theme = getAcademicFigureTheme("modalDark")) {
+  return `<line x1="${plotFrame.left}" y1="${plotFrame.top}" x2="${plotFrame.left}" y2="${(
     plotFrame.top + plotFrame.height
-  ).toFixed(2)}"></line>`;
+  ).toFixed(2)}" stroke="${theme.axis}" stroke-width="1.2"></line>`;
 }
 
 function renderAcademicFigure({
+  layout,
   width,
   height,
   title,
@@ -8118,92 +8519,159 @@ function renderAcademicFigure({
   plotMarkup,
   xAxisTitle,
   yAxisTitle,
+  panels,
   variant = "modalDark",
   compact = false,
   kicker = "Academic Regional Comparison",
   noteLimit,
+  surface = "modal",
 }) {
-  const theme = getAcademicFigureTheme(variant);
-  const summaryMarkup = buildAcademicSummaryMarkup(summaryItems, width, {
-    compact,
-    limit: compact ? 3 : 6,
-  });
-  const legendMarkup = buildAcademicLegendMarkup(legendItems, width, {
-    compact,
-    maxRows: compact ? 3 : 6,
-  });
-  const notesMarkup = buildAcademicNotesMarkup(notes, height, {
-    limit: noteLimit ?? (compact ? 2 : 3),
-  });
-  const xAxisCaptionY = plotFrame.top + plotFrame.height + (compact ? 44 : 76);
-  const yAxisCaptionX = compact ? 22 : 28;
-  const yAxisCaptionY = plotFrame.top + plotFrame.height / 2;
-  const titleY = compact ? 54 : 74;
-  const subtitleY = compact ? 78 : 102;
-  const kickerY = compact ? 30 : 42;
-  const titleFontSize = compact ? 20 : 30;
-  const subtitleFontSize = compact ? 12 : 15;
-  const kickerFontSize = compact ? 10 : 11;
-  const summaryLabelFontSize = compact ? 10 : 11;
-  const summaryValueFontSize = compact ? 11.5 : 13;
-  const axisTextFontSize = compact ? 10.5 : 12;
-  const axisTitleFontSize = compact ? 11.5 : 13;
-  const legendFontSize = compact ? 10.5 : 12;
-  const noteFontSize = compact ? 10.5 : 12;
+  const panelSpecs =
+    panels && panels.length
+      ? panels
+      : plotFrame
+        ? [{ plotFrame, plotMarkup, xAxisTitle, yAxisTitle }]
+        : [];
+  const resolvedSurface = surface || (variant === "exportLight" ? "export" : compact ? "preview" : "modal");
+  const safeLayout =
+    layout ||
+    createAcademicFigureLayout({
+      width,
+      surface: resolvedSurface,
+      title,
+      subtitle,
+      summaryItems,
+      legendItems,
+      notes,
+      panelHeights: panelSpecs.map((panel) => Math.max(260, (panel.plotFrame?.height || 240) + 96)),
+      kicker,
+      noteLimit,
+    });
+  const theme = safeLayout.theme || getAcademicFigureTheme(variant);
+  const surfaceMeta = safeLayout.surfaceMeta || getFigureSurfaceMeta(resolvedSurface);
+  const figureWidth = width || safeLayout.width;
+  const figureHeight = height || safeLayout.height;
+  const axisTitleStyle = {
+    fill: theme.text,
+    fontSize: surfaceMeta.compact ? 11.5 : 13,
+    fontWeight: 600,
+  };
+  const panelMarkup = panelSpecs
+    .map((panel) => {
+      const localPlotFrame = panel.plotFrame;
+      if (!localPlotFrame) {
+        return "";
+      }
+      const localMarkup = surfaceMeta.interactive
+        ? panel.plotMarkup || ""
+        : stripAcademicFigureInteractionMarkup(panel.plotMarkup || "");
+      const xAxisCaptionY =
+        panel.xAxisTitleY || localPlotFrame.top + localPlotFrame.height + (surfaceMeta.compact ? 50 : 74);
+      const yAxisCaptionX =
+        panel.yAxisTitleX ||
+        Math.max(surfaceMeta.compact ? 22 : 30, localPlotFrame.left - (surfaceMeta.compact ? 50 : 72));
+      const yAxisCaptionY = panel.yAxisTitleY || localPlotFrame.top + localPlotFrame.height / 2;
+      return `
+        ${
+          panel.panelLabel
+            ? buildSvgTextMarkup(
+                [panel.panelLabel],
+                localPlotFrame.left,
+                panel.panelLabelY || localPlotFrame.top - (surfaceMeta.compact ? 14 : 18),
+                {
+                  fill: theme.muted,
+                  fontSize: surfaceMeta.compact ? 10.5 : 12,
+                  fontWeight: 600,
+                  letterSpacing: 0.04,
+                }
+              )
+            : ""
+        }
+        <rect
+          x="${(panel.panelBackgroundX ?? localPlotFrame.left).toFixed(2)}"
+          y="${(panel.panelBackgroundY ?? localPlotFrame.top).toFixed(2)}"
+          width="${(panel.panelBackgroundWidth ?? localPlotFrame.width).toFixed(2)}"
+          height="${(panel.panelBackgroundHeight ?? localPlotFrame.height).toFixed(2)}"
+          rx="${panel.panelRadius || 18}"
+          fill="${theme.panel}"
+          stroke="${theme.panelStroke}"
+          stroke-width="1"
+        ></rect>
+        ${localMarkup}
+        ${
+          panel.xAxisTitle
+            ? buildSvgTextMarkup(
+                [panel.xAxisTitle],
+                localPlotFrame.left + localPlotFrame.width / 2,
+                xAxisCaptionY,
+                {
+                  ...axisTitleStyle,
+                  textAnchor: "middle",
+                }
+              )
+            : ""
+        }
+        ${
+          panel.yAxisTitle
+            ? buildSvgTextMarkup([panel.yAxisTitle], yAxisCaptionX, yAxisCaptionY, {
+                ...axisTitleStyle,
+                textAnchor: "middle",
+                transform: `rotate(-90 ${yAxisCaptionX.toFixed(2)} ${yAxisCaptionY.toFixed(2)})`,
+              })
+            : ""
+        }
+      `;
+    })
+    .join("");
 
   return `
     <svg
       class="compare-figure-svg"
       xmlns="http://www.w3.org/2000/svg"
-      width="${width}"
-      height="${height}"
-      viewBox="0 0 ${width} ${height}"
+      width="${figureWidth}"
+      height="${figureHeight}"
+      viewBox="0 0 ${figureWidth} ${figureHeight}"
       role="img"
       aria-label="${escapeAttribute(title)}"
+      shape-rendering="geometricPrecision"
     >
-      <defs>
-        <style><![CDATA[
-          .figure-bg { fill: ${theme.background}; }
-          .figure-panel { fill: ${theme.panel}; stroke: ${theme.panelStroke}; stroke-width: 1; }
-          .figure-title { fill: ${theme.text}; font: 700 ${titleFontSize}px "Segoe UI Variable Display", "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif; }
-          .figure-subtitle { fill: ${theme.subtle}; font: 400 ${subtitleFontSize}px "Segoe UI Variable Text", "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif; }
-          .figure-kicker { fill: ${theme.muted}; font: 600 ${kickerFontSize}px "Segoe UI Variable Text", "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif; letter-spacing: 0.16em; text-transform: uppercase; }
-          .figure-summary-pill { fill: ${theme.summaryFill}; stroke: ${theme.panelStroke}; stroke-width: 1; }
-          .figure-summary-label { fill: ${theme.muted}; font: 600 ${summaryLabelFontSize}px "Segoe UI Variable Text", "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif; letter-spacing: 0.08em; text-transform: uppercase; }
-          .figure-summary-value { fill: ${theme.text}; font: 700 ${summaryValueFontSize}px "Segoe UI Variable Text", "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif; }
-          .figure-grid-line { stroke: ${theme.grid}; stroke-width: 1; stroke-dasharray: 4 6; }
-          .figure-axis-line { stroke: ${theme.axis}; stroke-width: 1.2; }
-          .figure-axis-text { fill: ${theme.subtle}; font: ${axisTextFontSize}px "Segoe UI Variable Text", "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif; }
-          .figure-axis-title { fill: ${theme.text}; font: 600 ${axisTitleFontSize}px "Segoe UI Variable Text", "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif; }
-          .figure-legend-label { fill: ${theme.subtle}; font: ${legendFontSize}px "Segoe UI Variable Text", "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif; }
-          .figure-note { fill: ${theme.note}; font: ${noteFontSize}px "Segoe UI Variable Text", "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif; }
-        ]]></style>
-      </defs>
-      <rect class="figure-bg" x="0" y="0" width="${width}" height="${height}" rx="24"></rect>
-      <text class="figure-kicker" x="56" y="${kickerY}">${escapeHtml(kicker)}</text>
-      <text class="figure-title" x="56" y="${titleY}">${escapeHtml(title)}</text>
-      <text class="figure-subtitle" x="56" y="${subtitleY}">${escapeHtml(subtitle)}</text>
-      ${summaryMarkup}
-      ${legendMarkup}
-      <rect class="figure-panel" x="${plotFrame.left}" y="${plotFrame.top}" width="${plotFrame.width}" height="${plotFrame.height}" rx="18"></rect>
-      ${plotMarkup}
+      <rect x="0" y="0" width="${figureWidth}" height="${figureHeight}" rx="${surfaceMeta.compact ? 20 : 24}" fill="${
+        theme.background
+      }"></rect>
       ${
-        xAxisTitle
-          ? `<text class="figure-axis-title" x="${(plotFrame.left + plotFrame.width / 2).toFixed(
-              2
-            )}" y="${xAxisCaptionY.toFixed(2)}" text-anchor="middle">${escapeHtml(xAxisTitle)}</text>`
+        safeLayout.header?.kicker
+          ? buildSvgTextMarkup(
+              safeLayout.header.kicker.lines,
+              safeLayout.header.kicker.x,
+              safeLayout.header.kicker.y,
+              safeLayout.header.kicker.style
+            )
           : ""
       }
       ${
-        yAxisTitle
-          ? `<text class="figure-axis-title" x="${yAxisCaptionX}" y="${yAxisCaptionY.toFixed(
-              2
-            )}" text-anchor="middle" transform="rotate(-90 ${yAxisCaptionX} ${yAxisCaptionY.toFixed(
-              2
-            )})">${escapeHtml(yAxisTitle)}</text>`
+        safeLayout.header?.title
+          ? buildSvgTextMarkup(
+              safeLayout.header.title.lines,
+              safeLayout.header.title.x,
+              safeLayout.header.title.y,
+              safeLayout.header.title.style
+            )
           : ""
       }
-      ${notesMarkup}
+      ${
+        safeLayout.header?.subtitle
+          ? buildSvgTextMarkup(
+              safeLayout.header.subtitle.lines,
+              safeLayout.header.subtitle.x,
+              safeLayout.header.subtitle.y,
+              safeLayout.header.subtitle.style
+            )
+          : ""
+      }
+      ${safeLayout.summaryBlock?.markup || ""}
+      ${safeLayout.legendBlock?.markup || ""}
+      ${panelMarkup}
+      ${safeLayout.notesBlock?.markup || ""}
     </svg>
   `;
 }
@@ -8213,14 +8681,15 @@ function getAcademicFigureTheme(variant = "modalDark") {
     return {
       background: "#ffffff",
       panel: "#f8fafc",
-      panelStroke: "#dbe5ef",
+      panelStroke: "#d5dfeb",
       summaryFill: "#ffffff",
+      summaryStroke: "#d5dfeb",
       text: "#0f172a",
-      subtle: "#475569",
+      subtle: "#405062",
       muted: "#64748b",
-      axis: "#94a3b8",
-      grid: "#dbe4ee",
-      note: "#64748b",
+      axis: "#8ca0b6",
+      grid: "#d8e2ec",
+      note: "#556678",
     };
   }
 
@@ -8230,6 +8699,7 @@ function getAcademicFigureTheme(variant = "modalDark") {
       panel: "#0b1623",
       panelStroke: "#173246",
       summaryFill: "#0d1c2b",
+      summaryStroke: "#214661",
       text: "#edf6ff",
       subtle: "#b7c8d9",
       muted: "#79a4bf",
@@ -8244,6 +8714,7 @@ function getAcademicFigureTheme(variant = "modalDark") {
     panel: "#0b1724",
     panelStroke: "#1b3448",
     summaryFill: "#102032",
+    summaryStroke: "#244764",
     text: "#edf6ff",
     subtle: "#b9c8d8",
     muted: "#7ea3ba",
@@ -8253,96 +8724,493 @@ function getAcademicFigureTheme(variant = "modalDark") {
   };
 }
 
-function buildAcademicSummaryMarkup(summaryItems, width, options = {}) {
-  if (!summaryItems?.length) {
-    return "";
+function buildAcademicSummaryMarkup(summaryItems, bounds, options = {}) {
+  const items = (summaryItems || []).slice(0, options.limit || summaryItems?.length || 0);
+  if (!items.length) {
+    return { markup: "", height: 0, items: [] };
   }
 
-  let x = 56;
-  let y = options.compact ? 92 : 126;
-  const rowHeight = options.compact ? 28 : 32;
-  const visibleItems = summaryItems.slice(0, options.limit || summaryItems.length);
-  return visibleItems
-    .map((item) => {
-      const pillWidth = Math.min(280, 24 + estimateSvgTextWidth(item.label, 6.2) + estimateSvgTextWidth(item.value, 7.6));
-      if (x + pillWidth > width - 320) {
-        x = 56;
-        y += rowHeight + 10;
+  const safeBounds =
+    typeof bounds === "number"
+      ? { x: 56, y: options.compact ? 92 : 126, width: Math.max(120, bounds - 112) }
+      : bounds;
+  const theme = options.theme || getAcademicFigureTheme(options.variant || "modalDark");
+  const surfaceMeta = options.surfaceMeta || getFigureSurfaceMeta(options.surface || "modal");
+  const labelOptions = {
+    fill: theme.muted,
+    fontSize: options.compact ? 10.5 : 11.5,
+    fontWeight: 600,
+    letterSpacing: 0.04,
+  };
+  const valueOptions = {
+    fill: theme.text,
+    fontSize: options.compact ? 11.5 : 13.5,
+    fontWeight: 700,
+  };
+  const paddingX = options.compact ? 12 : 14;
+  const paddingY = options.compact ? 10 : 12;
+  const maxPillWidth = Math.max(
+    surfaceMeta.summaryMinWidth,
+    Math.min(surfaceMeta.summaryMaxWidth, Math.max(surfaceMeta.summaryMinWidth, safeBounds.width * 0.46))
+  );
+  const labelLineHeight = labelOptions.fontSize * 1.22;
+  const valueLineHeight = valueOptions.fontSize * 1.22;
+  let cursorX = safeBounds.x;
+  let cursorY = safeBounds.y;
+  let rowHeight = 0;
+  const rowMaxX = safeBounds.x + safeBounds.width;
+  const rendered = [];
+
+  items.forEach((item) => {
+    const labelLines = wrapAcademicText(item.label, maxPillWidth - paddingX * 2, labelOptions).slice(0, 2);
+    const valueLines = wrapAcademicText(item.value, maxPillWidth - paddingX * 2, valueOptions).slice(
+      0,
+      options.compact ? 2 : 3
+    );
+    const labelMetrics = measureTextLines(labelLines, { ...labelOptions, lineHeight: labelLineHeight });
+    const valueMetrics = measureTextLines(valueLines, { ...valueOptions, lineHeight: valueLineHeight });
+    const pillWidth = Math.max(
+      surfaceMeta.summaryMinWidth,
+      Math.min(maxPillWidth, Math.ceil(Math.max(labelMetrics.width, valueMetrics.width) + paddingX * 2))
+    );
+    const pillHeight = Math.ceil(paddingY * 2 + labelMetrics.height + valueMetrics.height + 4);
+
+    if (cursorX !== safeBounds.x && cursorX + pillWidth > rowMaxX) {
+      cursorX = safeBounds.x;
+      cursorY += rowHeight + surfaceMeta.summaryRowGap;
+      rowHeight = 0;
+    }
+
+    rendered.push(`
+      <g transform="translate(${cursorX.toFixed(2)}, ${cursorY.toFixed(2)})">
+        <rect
+          x="0"
+          y="0"
+          width="${pillWidth}"
+          height="${pillHeight}"
+          rx="${options.compact ? 14 : 16}"
+          fill="${theme.summaryFill}"
+          stroke="${theme.summaryStroke || theme.panelStroke}"
+          stroke-width="1"
+        ></rect>
+        ${buildSvgTextMarkup(labelLines, paddingX, paddingY + labelOptions.fontSize, labelOptions)}
+        ${buildSvgTextMarkup(valueLines, paddingX, paddingY + labelMetrics.height + 4 + valueOptions.fontSize, valueOptions)}
+      </g>
+    `);
+    cursorX += pillWidth + surfaceMeta.summaryGap;
+    rowHeight = Math.max(rowHeight, pillHeight);
+  });
+
+  return {
+    markup: rendered.join(""),
+    height: rowHeight ? cursorY - safeBounds.y + rowHeight : 0,
+    items,
+  };
+}
+
+function buildAcademicLegendMarkup(legendItems, bounds, options = {}) {
+  const items = legendItems || [];
+  if (!items.length) {
+    return { markup: "", height: 0, items: [] };
+  }
+
+  const safeBounds =
+    typeof bounds === "number"
+      ? { x: 56, y: options.compact ? 92 : 126, width: Math.max(180, bounds - 112) }
+      : bounds;
+  const theme = options.theme || getAcademicFigureTheme(options.variant || "modalDark");
+  const surfaceMeta = options.surfaceMeta || getFigureSurfaceMeta(options.surface || "modal");
+  const labelOptions = {
+    fill: theme.subtle,
+    fontSize: options.compact ? 10.5 : 12,
+    fontWeight: 500,
+  };
+  const swatchWidth = options.compact ? 28 : 30;
+  const labelGap = 10;
+  const itemMinWidth = options.itemMinWidth || surfaceMeta.legendMinItemWidth;
+  const maxColumns = Math.max(1, Math.min(items.length, Math.floor(safeBounds.width / itemMinWidth)));
+  let columns = maxColumns;
+  let rows = Math.ceil(items.length / columns);
+  const maxRows = options.maxRows || Math.max(2, Math.ceil(items.length / maxColumns));
+  while (rows > maxRows && columns < items.length) {
+    columns += 1;
+    rows = Math.ceil(items.length / columns);
+  }
+  const itemWidth = safeBounds.width / Math.max(1, columns);
+  const lineHeight = labelOptions.fontSize * 1.3;
+  const rowHeights = [];
+  const measurements = items.map((item, index) => {
+    const column = index % columns;
+    const row = Math.floor(index / columns);
+    const x = safeBounds.x + column * itemWidth;
+    const labelWidth = Math.max(80, itemWidth - swatchWidth - labelGap - 10);
+    const labelLines = wrapAcademicText(item.label, labelWidth, labelOptions).slice(0, options.compact ? 1 : 2);
+    const labelMetrics = measureTextLines(labelLines, { ...labelOptions, lineHeight });
+    rowHeights[row] = Math.max(rowHeights[row] || 0, Math.max(options.compact ? 20 : 24, labelMetrics.height));
+    return {
+      item,
+      column,
+      row,
+      x,
+      labelLines,
+      labelMetrics,
+    };
+  });
+  const rowOffsets = [];
+  let rowCursor = safeBounds.y;
+  rowHeights.forEach((rowHeight, rowIndex) => {
+    rowOffsets[rowIndex] = rowCursor;
+    rowCursor += rowHeight + (rowIndex < rowHeights.length - 1 ? surfaceMeta.legendRowGap : 0);
+  });
+  const rendered = measurements.map(({ item, x, row, labelLines }) => {
+    const y = rowOffsets[row];
+    const swatchY = y + Math.max(10, labelOptions.fontSize * 0.6);
+    const swatch =
+      item.type === "line"
+        ? `<line
+            x1="${x.toFixed(2)}"
+            y1="${swatchY.toFixed(2)}"
+            x2="${(x + swatchWidth).toFixed(2)}"
+            y2="${swatchY.toFixed(2)}"
+            stroke="${escapeAttribute(item.color)}"
+            stroke-width="${options.compact ? 2.6 : 3}"
+            stroke-linecap="round"
+            stroke-dasharray="${escapeAttribute(item.dash || "")}"
+          ></line>`
+        : item.type === "point"
+          ? `<circle cx="${(x + swatchWidth / 2).toFixed(2)}" cy="${swatchY.toFixed(2)}" r="${
+              options.compact ? "4" : "4.5"
+            }" fill="${escapeAttribute(item.color)}"></circle>`
+          : `<rect
+              x="${x.toFixed(2)}"
+              y="${(swatchY - 6).toFixed(2)}"
+              width="${swatchWidth}"
+              height="${options.compact ? 10 : 12}"
+              rx="4"
+              fill="${escapeAttribute(item.color)}"
+            ></rect>`;
+    return `
+      <g>
+        ${swatch}
+        ${buildSvgTextMarkup(labelLines, x + swatchWidth + labelGap, y + labelOptions.fontSize, labelOptions)}
+      </g>
+    `;
+  });
+
+  const totalHeight =
+    rowHeights.reduce((sum, itemHeight) => sum + itemHeight, 0) +
+    Math.max(0, rowHeights.length - 1) * surfaceMeta.legendRowGap;
+  return {
+    markup: rendered.join(""),
+    height: totalHeight,
+    items,
+  };
+}
+
+function buildAcademicNotesMarkup(notes, bounds, options = {}) {
+  const visibleNotes = (notes || []).slice(0, options.limit || notes?.length || 0);
+  if (!visibleNotes.length) {
+    return { markup: "", height: 0, notes: [] };
+  }
+
+  const safeBounds =
+    typeof bounds === "number"
+      ? { x: 56, y: 0, width: Math.max(240, bounds - 112) }
+      : bounds;
+  const theme = options.theme || getAcademicFigureTheme(options.variant || "modalDark");
+  const noteOptions = {
+    fill: theme.note,
+    fontSize: options.compact ? 10.5 : 12,
+    fontWeight: 400,
+  };
+  const lineHeight = noteOptions.fontSize * 1.42;
+  let cursorY = safeBounds.y;
+  const rendered = [];
+
+  visibleNotes.forEach((note) => {
+    const lines = wrapAcademicText(note, safeBounds.width, noteOptions);
+    const metrics = measureTextLines(lines, { ...noteOptions, lineHeight });
+    rendered.push(buildSvgTextMarkup(lines, safeBounds.x, cursorY + noteOptions.fontSize, { ...noteOptions, lineHeight }));
+    cursorY += metrics.height + (options.compact ? 8 : 12);
+  });
+
+  return {
+    markup: rendered.join(""),
+    height: cursorY - safeBounds.y - (options.compact ? 8 : 12),
+    notes: visibleNotes,
+  };
+}
+
+function createAcademicFigureLayout({
+  width,
+  surface = "modal",
+  title,
+  subtitle,
+  summaryItems,
+  legendItems,
+  notes,
+  panelHeights = [],
+  kicker = "Academic Regional Comparison",
+  noteLimit,
+}) {
+  const surfaceMeta = getFigureSurfaceMeta(surface);
+  const theme = getAcademicFigureTheme(surfaceMeta.variant);
+  const contentX = surfaceMeta.paddingX;
+  const contentWidth = width - surfaceMeta.paddingX * 2;
+  const kickerStyle = {
+    fill: theme.muted,
+    fontSize: surfaceMeta.compact ? 10 : 11.5,
+    fontWeight: 700,
+    letterSpacing: 0.16,
+    textTransform: "uppercase",
+  };
+  const titleStyle = {
+    fill: theme.text,
+    fontSize: surfaceMeta.compact ? 20 : 32,
+    fontWeight: 700,
+    lineHeight: surfaceMeta.compact ? 24 : 36,
+  };
+  const subtitleStyle = {
+    fill: theme.subtle,
+    fontSize: surfaceMeta.compact ? 12 : 15,
+    fontWeight: 400,
+    lineHeight: surfaceMeta.compact ? 15 : 20,
+  };
+  const legendSideEligible =
+    !surfaceMeta.compact &&
+    (legendItems?.length || 0) > 0 &&
+    (legendItems?.length || 0) <= surfaceMeta.legendSideThreshold;
+  const legendSideWidth = legendSideEligible
+    ? Math.min(surfaceMeta.legendSideWidth, Math.max(220, contentWidth * 0.28))
+    : 0;
+  const titleWidth = contentWidth - (legendSideEligible ? legendSideWidth + surfaceMeta.sectionGap : 0);
+  const titleLines = wrapAcademicText(title, titleWidth, titleStyle);
+  const subtitleLines = wrapAcademicText(subtitle, titleWidth, subtitleStyle);
+  const header = {};
+  let cursorY = surfaceMeta.paddingTop;
+
+  if (kicker) {
+    header.kicker = {
+      x: contentX,
+      y: cursorY + kickerStyle.fontSize,
+      lines: [kicker],
+      style: kickerStyle,
+    };
+    cursorY += kickerStyle.fontSize + surfaceMeta.kickerGap;
+  }
+
+  header.title = {
+    x: contentX,
+    y: cursorY + titleStyle.fontSize,
+    lines: titleLines,
+    style: titleStyle,
+  };
+  cursorY += measureTextLines(titleLines, titleStyle).height;
+
+  if (subtitleLines.length) {
+    cursorY += surfaceMeta.titleGap;
+    header.subtitle = {
+      x: contentX,
+      y: cursorY + subtitleStyle.fontSize,
+      lines: subtitleLines,
+      style: subtitleStyle,
+    };
+    cursorY += measureTextLines(subtitleLines, subtitleStyle).height;
+  }
+
+  let topCursor = cursorY;
+  let summaryBlock = { markup: "", height: 0 };
+  let legendBlock = { markup: "", height: 0 };
+
+  if (legendSideEligible) {
+    legendBlock = buildAcademicLegendMarkup(
+      legendItems,
+      {
+        x: width - contentX - legendSideWidth,
+        y: surfaceMeta.paddingTop + 2,
+        width: legendSideWidth,
+      },
+      {
+        surface,
+        surfaceMeta,
+        compact: surfaceMeta.compact,
+        theme,
+        maxRows: Math.max(3, legendItems.length),
       }
-      const markup = `
-        <g transform="translate(${x}, ${y})">
-          <rect class="figure-summary-pill" x="0" y="0" width="${pillWidth}" height="${rowHeight}" rx="16"></rect>
-          <text class="figure-summary-label" x="14" y="14">${escapeHtml(item.label)}</text>
-          <text class="figure-summary-value" x="14" y="24">${escapeHtml(item.value)}</text>
-        </g>
-      `;
-      x += pillWidth + 10;
-      return markup;
-    })
-    .join("");
-}
-
-function buildAcademicLegendMarkup(legendItems, width, options = {}) {
-  if (!legendItems?.length) {
-    return "";
+    );
+    topCursor = Math.max(topCursor, surfaceMeta.paddingTop + 2 + legendBlock.height);
   }
 
-  const legendX = options.compact ? width - 220 : width - 300;
-  const maxRows = options.maxRows || 6;
-  return legendItems
-    .map((item, index) => {
-      const column = Math.floor(index / maxRows);
-      const row = index % maxRows;
-      const x = legendX + column * (options.compact ? 122 : 150);
-      const y = (options.compact ? 40 : 56) + row * (options.compact ? 18 : 22);
-      const swatch =
-        item.type === "line"
-          ? `<line x1="${x}" y1="${y}" x2="${x + 28}" y2="${y}" stroke="${escapeAttribute(item.color)}" stroke-width="3" stroke-linecap="round" stroke-dasharray="${escapeAttribute(
-              item.dash || ""
-            )}"></line>`
-          : `<rect x="${x}" y="${y - 6}" width="26" height="12" rx="4" fill="${escapeAttribute(item.color)}"></rect>`;
-      return `
-        <g>
-          ${swatch}
-          <text class="figure-legend-label" x="${x + 36}" y="${y + 4}">${escapeHtml(
-            truncate(item.label, 22)
-          )}</text>
-        </g>
-      `;
-    })
-    .join("");
-}
-
-function buildAcademicNotesMarkup(notes, height, options = {}) {
-  if (!notes?.length) {
-    return "";
+  if (summaryItems?.length) {
+    summaryBlock = buildAcademicSummaryMarkup(
+      summaryItems,
+      {
+        x: contentX,
+        y: topCursor + surfaceMeta.sectionGap,
+        width: contentWidth,
+      },
+      {
+        surface,
+        surfaceMeta,
+        compact: surfaceMeta.compact,
+        theme,
+        limit: surfaceMeta.summaryLimit,
+      }
+    );
+    topCursor = topCursor + surfaceMeta.sectionGap + summaryBlock.height;
   }
 
-  const visibleNotes = notes.slice(0, options.limit || 3);
-  return visibleNotes
-    .map((note, index) => {
-      const y = height - 58 + index * 16;
-      return `<text class="figure-note" x="56" y="${y}">${escapeHtml(truncate(note, 136))}</text>`;
-    })
-    .join("");
+  if (legendItems?.length && !legendSideEligible) {
+    legendBlock = buildAcademicLegendMarkup(
+      legendItems,
+      {
+        x: contentX,
+        y: topCursor + surfaceMeta.sectionGap,
+        width: contentWidth,
+      },
+      {
+        surface,
+        surfaceMeta,
+        compact: surfaceMeta.compact,
+        theme,
+        maxRows: surfaceMeta.compact ? 2 : 3,
+      }
+    );
+    topCursor = topCursor + surfaceMeta.sectionGap + legendBlock.height;
+  }
+
+  const panelSlots = [];
+  let panelCursor = topCursor + surfaceMeta.sectionGap;
+  panelHeights.forEach((panelHeight) => {
+    panelSlots.push({
+      top: panelCursor,
+      height: panelHeight,
+      plotTop: panelCursor + (panelHeights.length > 1 ? surfaceMeta.panelTitleGap : 0),
+      plotHeight: panelHeight - (panelHeights.length > 1 ? surfaceMeta.panelTitleGap : 0),
+    });
+    panelCursor += panelHeight + surfaceMeta.panelGap;
+  });
+
+  const notesMeasured = buildAcademicNotesMarkup(
+    notes,
+    { x: contentX, y: 0, width: contentWidth },
+    {
+      surface,
+      surfaceMeta,
+      compact: surfaceMeta.compact,
+      theme,
+      limit: noteLimit ?? surfaceMeta.noteLimit,
+    }
+  );
+  const figureHeight = Math.ceil(
+    panelCursor -
+      (panelSlots.length ? surfaceMeta.panelGap : 0) +
+      (notesMeasured.height ? surfaceMeta.sectionGap : 0) +
+      notesMeasured.height +
+      surfaceMeta.bottomPadding
+  );
+  const notesBlock = buildAcademicNotesMarkup(
+    notes,
+    {
+      x: contentX,
+      y: figureHeight - surfaceMeta.bottomPadding - notesMeasured.height,
+      width: contentWidth,
+    },
+    {
+      surface,
+      surfaceMeta,
+      compact: surfaceMeta.compact,
+      theme,
+      limit: noteLimit ?? surfaceMeta.noteLimit,
+    }
+  );
+
+  return {
+    width,
+    height: figureHeight,
+    surface,
+    surfaceMeta,
+    theme,
+    header,
+    summaryBlock,
+    legendBlock,
+    notesBlock,
+    panelSlots,
+    contentX,
+    contentWidth,
+  };
 }
 
-function estimateSvgTextWidth(value, perCharacter = 7) {
-  return String(value || "").length * perCharacter;
+function stripAcademicFigureInteractionMarkup(markup) {
+  return String(markup || "")
+    .replace(/<rect\b[^>]*class="chart-hitbox"[^>]*>\s*<\/rect>/g, "")
+    .replace(/\sdata-analysis-key="[^"]*"/g, "");
+}
+
+function buildCompareCoverageNotes(context, surface) {
+  if (surface === "preview" && context.previewLimited) {
+    return [
+      `当前页面预览为交互优化，仅展示 ${formatNumber(context.visibleRegions.length)} / ${formatNumber(
+        context.allRegions.length
+      )} 个地区；中央弹窗与导出图将保留全部已选地区。`,
+    ];
+  }
+  if (context.regionPanels.length > 1) {
+    return [
+      `为保证标题、图例与坐标标签可读，当前图已按完整选区拆分为 ${formatNumber(
+        context.regionPanels.length
+      )} 个 panel，未静默删减任何已选地区。`,
+    ];
+  }
+  return ["当前所有已选地区均已纳入本图与导出结果。"];
+}
+
+function buildRegionPanelLabel(regions, panelIndex, panelCount) {
+  if (panelCount <= 1) {
+    return "";
+  }
+  const names = regions.map((region) => region.displayName);
+  const nameCopy =
+    names.length <= 3
+      ? names.join("、")
+      : `${names.slice(0, 3).join("、")} 等 ${formatNumber(names.length)} 个地区`;
+  return `分面 ${panelIndex + 1} / ${panelCount} · ${nameCopy}`;
+}
+
+function measureWrappedLabelWidth(labels, maxWidth, textOptions, maxLines = 2) {
+  return labels.reduce((maxWidthValue, label) => {
+    const lines = wrapAcademicText(label, maxWidth, textOptions).slice(0, maxLines);
+    return Math.max(maxWidthValue, measureTextLines(lines, textOptions).width);
+  }, 0);
+}
+
+function buildWrappedAxisLabelMarkup(label, x, y, maxWidth, textOptions, options = {}) {
+  const lines = wrapAcademicText(label, maxWidth, textOptions).slice(0, options.maxLines || 2);
+  return buildSvgTextMarkup(lines, x, y, {
+    ...textOptions,
+    textAnchor: options.textAnchor || "middle",
+  });
+}
+
+function createPanelPlotFrame(width, slot, left, right, topInset, bottomInset) {
+  return {
+    left,
+    top: slot.plotTop + topInset,
+    width: width - left - right,
+    height: slot.plotHeight - topInset - bottomInset,
+  };
 }
 
 function buildTemporalCompareModal(context, options = {}) {
   const surface = options.surface || "modal";
-  const surfaceMeta = getFigureSurfaceMeta(surface);
   const modeMeta = buildAnalysisModeMeta(context);
-  const granularity = state.compareTemporalGranularity;
-  const analyses = context.visibleRegions.map((region) => ({
-    region,
-    analysis: buildTemporalAnalysis(region.events, state.rangeStart, state.rangeEnd, {
-      granularity,
-    }),
-  }));
-  const buckets = analyses[0]?.analysis?.buckets || [];
+  const granularity = normalizeCompareTimeGranularity(state.compareTemporalGranularity);
+  const buckets = buildTemporalAnalysis(
+    context.allRegions[0]?.events || [],
+    state.rangeStart,
+    state.rangeEnd,
+    { granularity }
+  ).buckets;
   if (!buckets.length) {
     return buildCompareEmptyPayload(
       modeMeta.isSingle ? "地区时间趋势分析" : "多地区时间序列对比",
@@ -8352,219 +9220,257 @@ function buildTemporalCompareModal(context, options = {}) {
     );
   }
 
-  const width = surface === "preview" ? 640 : 1320;
-  const height = surface === "preview" ? 392 : 760;
-  const plotFrame = createFigureFrame(
-    width,
-    height,
-    surface === "preview" ? 58 : 96,
-    surface === "preview" ? 26 : 56,
-    surface === "preview" ? 126 : 188,
-    surface === "preview" ? 82 : 152
-  );
-  const yMax = Math.max(
-    1,
-    ...analyses.flatMap(({ analysis }) =>
+  const renderSurfaceFigure = (surfaceContext, targetSurface) => {
+    const surfaceMeta = getFigureSurfaceMeta(targetSurface);
+    const width = targetSurface === "preview" ? 640 : targetSurface === "export" ? 1480 : 1320;
+    const legendItems =
+      modeMeta.isSingle && targetSurface === "preview"
+        ? []
+        : surfaceContext.allRegions.map((region) => ({
+            label: region.displayName,
+            color: region.compareColor,
+            dash: region.compareDash,
+            type: "line",
+          }));
+    const panelHeights = surfaceContext.regionPanels.map(() => (targetSurface === "preview" ? 250 : 318));
+    const summaryItems = buildCompareSummaryItems(surfaceContext, [
+      {
+        label: "时间粒度",
+        value: buildTemporalGranularityLabel(granularity, state.rangeEnd - state.rangeStart),
+      },
+      { label: "总样本量", value: `${formatNumber(surfaceContext.totalEvents)} 条` },
+      { label: "移动平均", value: state.compareTemporalShowAverage ? "已开启" : "未开启" },
+    ]);
+    const notes = [
+      `横轴表示时间，纵轴表示事件数量；当前分析时间范围为 ${formatDateRange(state.rangeStart, state.rangeEnd)}。`,
+      ...buildCompareCoverageNotes(surfaceContext, targetSurface),
       state.compareTemporalShowAverage
-        ? analysis.buckets.map((bucket) => Math.max(bucket.count, bucket.movingAverage))
-        : analysis.buckets.map((bucket) => bucket.count)
-    )
-  );
-  const yTicks = buildValueTicks(yMax, 5, 0);
-  const xIndices = buildEvenlySpacedIndices(buckets.length, surface === "preview" ? 4 : 6);
-  const plotPieces = [
-    buildAcademicGridLines(plotFrame, yTicks, 0, yMax, {
-      tickFormatter: (tick) => formatNumber(Math.round(tick)),
-    }),
-    buildAcademicXAxisLine(plotFrame),
-    buildAcademicYAxisLine(plotFrame),
-  ];
-  const dataRows = [];
+        ? `已叠加 ${buildTemporalAnalysis(
+            surfaceContext.allRegions[0]?.events || [],
+            state.rangeStart,
+            state.rangeEnd,
+            { granularity }
+          ).movingAverageWindow} 箱移动平均曲线；虚线仅用于平滑波动，不改变原始计数口径。`
+        : "当前图仅显示原始时间序列频次，不叠加平滑曲线。",
+      surfaceContext.lowSampleRegions.length
+        ? `以下地区样本较少（<20 条）：${surfaceContext.lowSampleRegions.map((region) => region.displayName).join("、")}。短期波动应谨慎解读。`
+        : "当前各地区样本量足以支撑基本的时序比较。",
+    ];
+    const chartTitle = modeMeta.isSingle ? `${modeMeta.primaryRegion} 时间趋势分析` : "多地区地震活动时间序列对比";
+    const chartSubtitle = modeMeta.isSingle
+      ? `${modeMeta.primaryRegion} · 时间范围 ${formatDateRange(state.rangeStart, state.rangeEnd)}`
+      : `${buildCompareFigureRegionCaption(surfaceContext)} · 时间范围 ${formatDateRange(state.rangeStart, state.rangeEnd)}`;
+    const layout = createAcademicFigureLayout({
+      width,
+      surface: targetSurface,
+      title: chartTitle,
+      subtitle: chartSubtitle,
+      summaryItems,
+      legendItems,
+      notes,
+      panelHeights,
+      kicker: modeMeta.isSingle ? "Regional Analysis" : "Academic Regional Comparison",
+      noteLimit: surfaceMeta.noteLimit,
+    });
+    const theme = layout.theme;
+    const axisLabelOptions = {
+      fill: theme.subtle,
+      fontSize: surfaceMeta.compact ? 10.5 : 12,
+      fontWeight: 500,
+    };
+    const panels = [];
+    const dataRows = [];
 
-  for (const { region, analysis } of analyses) {
-    const countPoints = [];
-    const averagePoints = [];
-    analysis.buckets.forEach((bucket, index) => {
-      const x = plotFrame.left + scaleLinear(index, 0, Math.max(1, analysis.buckets.length - 1), 0, plotFrame.width);
-      const countY = plotFrame.top + plotFrame.height - scaleLinear(bucket.count, 0, yMax, 0, plotFrame.height);
-      const averageY =
-        plotFrame.top + plotFrame.height - scaleLinear(bucket.movingAverage, 0, yMax, 0, plotFrame.height);
-      countPoints.push([x, countY]);
-      averagePoints.push([x, averageY]);
+    surfaceContext.regionPanels.forEach((regionGroup, panelIndex) => {
+      const analyses = regionGroup.map((region) => ({
+        region,
+        analysis: buildTemporalAnalysis(region.events, state.rangeStart, state.rangeEnd, {
+          granularity,
+        }),
+      }));
+      const panelBuckets = analyses[0]?.analysis?.buckets || [];
+      const slot = layout.panelSlots[panelIndex];
+      const yMax = Math.max(
+        1,
+        ...analyses.flatMap(({ analysis }) =>
+          state.compareTemporalShowAverage
+            ? analysis.buckets.map((bucket) => Math.max(bucket.count, bucket.movingAverage))
+            : analysis.buckets.map((bucket) => bucket.count)
+        )
+      );
+      const yTicks = buildValueTicks(yMax, 5, 0);
+      const yTickLabels = yTicks.map((tick) => formatNumber(Math.round(tick)));
+      const leftInset = Math.max(
+        targetSurface === "preview" ? 66 : 92,
+        28 + Math.ceil(Math.max(...yTickLabels.map((label) => measureAcademicText(label, axisLabelOptions))))
+      );
+      const rightInset = targetSurface === "preview" ? 20 : 30;
+      const bottomInset = targetSurface === "preview" ? 56 : 78;
+      const plotFrame = createPanelPlotFrame(width, slot, leftInset, rightInset, 12, bottomInset);
+      const xLabels = panelBuckets.map((bucket) => bucket.shortLabel);
+      const xIndices = buildAdaptiveEvenlySpacedIndices(
+        xLabels,
+        plotFrame.width,
+        axisLabelOptions,
+        targetSurface === "preview" ? 4 : 7,
+        18
+      );
+      const plotPieces = [
+        buildAcademicGridLines(plotFrame, yTicks, 0, yMax, {
+          theme,
+          compact: surfaceMeta.compact,
+          tickFormatter: (tick) => formatNumber(Math.round(tick)),
+          fontOptions: axisLabelOptions,
+        }),
+        buildAcademicXAxisLine(plotFrame, theme),
+        buildAcademicYAxisLine(plotFrame, theme),
+      ];
 
-      const analysisKey = registerCompareAnalysisTarget({
-        label: `${region.displayName} · ${bucket.shortLabel}`,
-        eventIds: bucket.eventIds,
-        highlightEventIds: sampleEventIds(bucket.eventIds),
-        totalCount: bucket.count,
-        tooltipTitle: `${region.displayName} · ${bucket.label}`,
-        tooltipLines: [
-          `事件数量：${formatNumber(bucket.count)} 条`,
-          `移动平均：${bucket.movingAverage.toFixed(1)} 条 / 箱`,
-          `平均震级：${bucket.count ? bucket.meanMagnitude.toFixed(2) : "--"}`,
-          `估算能量：${formatEnergyValue(bucket.energy)}`,
-        ],
-        statusMessage: `已高亮 ${region.displayName} 在 ${bucket.label} 内的 ${formatNumber(bucket.count)} 条事件。`,
+      analyses.forEach(({ region, analysis }) => {
+        const countPoints = [];
+        const averagePoints = [];
+        analysis.buckets.forEach((bucket, index) => {
+          const x = plotFrame.left + scaleLinear(index, 0, Math.max(1, analysis.buckets.length - 1), 0, plotFrame.width);
+          const countY = plotFrame.top + plotFrame.height - scaleLinear(bucket.count, 0, yMax, 0, plotFrame.height);
+          const averageY =
+            plotFrame.top + plotFrame.height - scaleLinear(bucket.movingAverage, 0, yMax, 0, plotFrame.height);
+          countPoints.push([x, countY]);
+          averagePoints.push([x, averageY]);
+
+          const analysisKey = registerCompareAnalysisTarget({
+            label: `${region.displayName} · ${bucket.shortLabel}`,
+            eventIds: bucket.eventIds,
+            highlightEventIds: sampleEventIds(bucket.eventIds),
+            totalCount: bucket.count,
+            tooltipTitle: `${region.displayName} · ${bucket.label}`,
+            tooltipLines: [
+              `事件数量：${formatNumber(bucket.count)} 条`,
+              `移动平均：${bucket.movingAverage.toFixed(1)} 条 / 箱`,
+              `平均震级：${bucket.count ? bucket.meanMagnitude.toFixed(2) : "--"}`,
+              `估算能量：${formatEnergyValue(bucket.energy)}`,
+            ],
+            statusMessage: `已高亮 ${region.displayName} 在 ${bucket.label} 内的 ${formatNumber(bucket.count)} 条事件。`,
+          });
+
+          dataRows.push({
+            region: region.displayName,
+            time_bucket: bucket.label,
+            granularity: analysis.granularityLabel,
+            event_count: bucket.count,
+            moving_average: Number(bucket.movingAverage.toFixed(4)),
+            mean_magnitude: Number(bucket.meanMagnitude.toFixed(4)),
+            max_magnitude: Number(bucket.maxMagnitude.toFixed(4)),
+            estimated_energy_j: Number(bucket.energy.toFixed(2)),
+          });
+
+          if (
+            index % Math.max(1, Math.ceil(analysis.buckets.length / (targetSurface === "preview" ? 10 : 16))) === 0 ||
+            index === analysis.buckets.length - 1
+          ) {
+            plotPieces.push(`
+              <circle
+                data-analysis-key="${analysisKey}"
+                cx="${x.toFixed(2)}"
+                cy="${countY.toFixed(2)}"
+                r="${targetSurface === "preview" ? "3.2" : "4.2"}"
+                fill="${escapeAttribute(region.compareColor)}"
+                stroke="${targetSurface === "export" ? "#ffffff" : "#e2efff"}"
+                stroke-width="1.2"
+              ></circle>
+            `);
+          }
+        });
+
+        plotPieces.push(
+          `<path d="${buildLinePath(countPoints)}" fill="none" stroke="${escapeAttribute(
+            region.compareColor
+          )}" stroke-width="${targetSurface === "preview" ? "2.4" : "3.1"}" stroke-linecap="round" stroke-linejoin="round" stroke-dasharray="${escapeAttribute(
+            region.compareDash || ""
+          )}"></path>`
+        );
+        if (state.compareTemporalShowAverage) {
+          plotPieces.push(
+            `<path d="${buildLinePath(averagePoints)}" fill="none" stroke="${escapeAttribute(
+              region.compareColor
+            )}" stroke-width="${targetSurface === "preview" ? "1.4" : "1.9"}" stroke-linecap="round" stroke-linejoin="round" stroke-dasharray="4 4" opacity="0.48"></path>`
+          );
+        }
       });
 
-      dataRows.push({
-        region: region.displayName,
-        time_bucket: bucket.label,
-        granularity: analysis.granularityLabel,
-        event_count: bucket.count,
-        moving_average: Number(bucket.movingAverage.toFixed(4)),
-        mean_magnitude: Number(bucket.meanMagnitude.toFixed(4)),
-        max_magnitude: Number(bucket.maxMagnitude.toFixed(4)),
-        estimated_energy_j: Number(bucket.energy.toFixed(2)),
+      xIndices.forEach((index) => {
+        const x = plotFrame.left + scaleLinear(index, 0, Math.max(1, panelBuckets.length - 1), 0, plotFrame.width);
+        plotPieces.push(
+          buildSvgTextMarkup([panelBuckets[index].shortLabel], x, plotFrame.top + plotFrame.height + 28, {
+            ...axisLabelOptions,
+            textAnchor: "middle",
+          })
+        );
       });
 
-      if (
-        index % Math.max(1, Math.ceil(analysis.buckets.length / (surface === "preview" ? 10 : 18))) === 0 ||
-        index === analysis.buckets.length - 1
-      ) {
-        plotPieces.push(`
-          <circle
-            data-analysis-key="${analysisKey}"
-            cx="${x.toFixed(2)}"
-            cy="${countY.toFixed(2)}"
-            r="${surface === "preview" ? "3.3" : "4.2"}"
-            fill="${escapeAttribute(region.compareColor)}"
-            stroke="#ffffff"
-            stroke-width="1.4"
-          ></circle>
-        `);
-      }
+      panels.push({
+        panelLabel: buildRegionPanelLabel(regionGroup, panelIndex, surfaceContext.regionPanels.length),
+        plotFrame,
+        plotMarkup: plotPieces.join(""),
+        xAxisTitle: "时间",
+        yAxisTitle: "事件数量",
+      });
     });
 
-    plotPieces.push(
-      `<path d="${buildLinePath(countPoints)}" fill="none" stroke="${escapeAttribute(
-        region.compareColor
-      )}" stroke-width="${surface === "preview" ? "2.4" : "3.2"}" stroke-linecap="round" stroke-linejoin="round" stroke-dasharray="${escapeAttribute(
-        region.compareDash || ""
-      )}"></path>`
-    );
-    if (state.compareTemporalShowAverage) {
-      plotPieces.push(
-        `<path d="${buildLinePath(averagePoints)}" fill="none" stroke="${escapeAttribute(
-          region.compareColor
-        )}" stroke-width="${surface === "preview" ? "1.5" : "2"}" stroke-linecap="round" stroke-linejoin="round" stroke-dasharray="4 4" opacity="0.42"></path>`
-      );
-    }
-  }
+    return {
+      chartTitle,
+      chartSubtitle,
+      summaryItems,
+      notes,
+      figureWidth: width,
+      figureHeight: layout.height,
+      figureSvg: renderAcademicFigure({
+        layout,
+        width,
+        height: layout.height,
+        title: chartTitle,
+        subtitle: chartSubtitle,
+        summaryItems,
+        legendItems,
+        notes,
+        panels,
+        surface: targetSurface,
+        kicker: modeMeta.isSingle ? "Regional Analysis" : "Academic Regional Comparison",
+        noteLimit: surfaceMeta.noteLimit,
+      }),
+      dataRows,
+    };
+  };
 
-  plotPieces.push(
-    ...xIndices.map((index) => {
-      const x = plotFrame.left + scaleLinear(index, 0, Math.max(1, buckets.length - 1), 0, plotFrame.width);
-      return `<text class="figure-axis-text" x="${x.toFixed(2)}" y="${(plotFrame.top + plotFrame.height + 28).toFixed(
-        2
-      )}" text-anchor="middle">${escapeHtml(buckets[index].shortLabel)}</text>`;
-    })
-  );
-
-  const summaryItems = buildCompareSummaryItems(context, [
-    { label: "时间粒度", value: analyses[0].analysis.granularityLabel },
-    { label: "总样本量", value: `${formatNumber(context.totalEvents)} 条` },
-    {
-      label: "展示地区",
-      value:
-        context.hiddenCount > 0
-          ? `${formatNumber(context.visibleRegions.length)} / ${formatNumber(context.allRegions.length)}`
-          : `${formatNumber(context.visibleRegions.length)} 个`,
-    },
-  ]);
-  const notes = [
-    `横轴为时间，纵轴为事件数量；当前粒度为 ${analyses[0].analysis.granularityLabel}，时间范围 ${formatDateRange(
-      state.rangeStart,
-      state.rangeEnd
-    )}。`,
-    state.compareTemporalShowAverage
-      ? `已叠加 ${analyses[0].analysis.movingAverageWindow} 箱移动平均线，虚线用于平滑短期波动，不改变原始事件数。`
-      : "当前图仅显示原始事件频次折线，未叠加移动平均线。",
-    context.hiddenCount > 0
-      ? `为保证主图可读性，当前仅展示前 ${formatNumber(context.visibleRegions.length)} 个已选地区，其余 ${formatNumber(
-          context.hiddenCount
-        )} 个地区请通过缩小选择范围后再比较。`
-      : "各地区颜色在不同对比模块中保持稳定映射，便于跨模块识别与汇报展示。",
-    context.lowSampleRegions.length
-      ? `以下地区样本较少（<20 条）：${context.lowSampleRegions.map((region) => region.displayName).join("、")}。请谨慎解读短期起伏。`
-      : "当前各地区样本量均足以支撑基本的时序比较。",
-  ];
   const chartTitle = modeMeta.isSingle ? `${modeMeta.primaryRegion} 时间趋势分析` : "多地区地震活动时间序列对比";
-  const chartSubtitle = modeMeta.isSingle
-    ? `${modeMeta.primaryRegion} · 时间范围 ${formatDateRange(state.rangeStart, state.rangeEnd)}`
-    : `${buildCompareFigureRegionCaption(context)} · 时间范围 ${formatDateRange(state.rangeStart, state.rangeEnd)}`;
+  const currentSurfaceFigure = renderSurfaceFigure(context, surface);
+  const exportSurfaceFigure =
+    surface === "modal" ? renderSurfaceFigure(buildCompareRegionContext("temporal", { surface: "export" }), "export") : null;
 
   return {
     title: chartTitle,
     subtitle: modeMeta.isSingle
       ? `${modeMeta.primaryRegion} 当前地区分析，展示其在统一时间轴下的事件频次变化。`
       : buildCompareSubtitle(context, "比较当前已选地区在统一时间轴下的事件频次变化。"),
-    summaryItems,
+    summaryItems: currentSurfaceFigure.summaryItems,
     controlGroups: buildCompareControlGroups("temporal"),
-    notes,
-    previewNoteLimit: surfaceMeta.noteLimit,
-    figureWidth: width,
-    figureHeight: height,
-    figureSvg: renderAcademicFigure({
-      width,
-      height,
-      title: chartTitle,
-      subtitle: chartSubtitle,
-      summaryItems,
-      legendItems:
-        modeMeta.isSingle && surface === "preview"
-          ? []
-          : context.visibleRegions.map((region) => ({
-              label: region.displayName,
-              color: region.compareColor,
-              dash: region.compareDash,
-              type: "line",
-            })),
-      notes,
-      plotFrame,
-      plotMarkup: plotPieces.join(""),
-      xAxisTitle: "Time",
-      yAxisTitle: "Event Count",
-      variant: surfaceMeta.variant,
-      compact: surfaceMeta.compact,
-      kicker: modeMeta.isSingle ? "Regional Analysis" : "Academic Regional Comparison",
-      noteLimit: surfaceMeta.noteLimit,
-    }),
-    exportFigureSvg:
-      surface === "modal"
-        ? renderAcademicFigure({
-            width,
-            height,
-            title: chartTitle,
-            subtitle: chartSubtitle,
-            summaryItems,
-            legendItems: context.visibleRegions.map((region) => ({
-              label: region.displayName,
-              color: region.compareColor,
-              dash: region.compareDash,
-              type: "line",
-            })),
-            notes,
-            plotFrame,
-            plotMarkup: plotPieces.join(""),
-            xAxisTitle: "Time",
-            yAxisTitle: "Event Count",
-            variant: "exportLight",
-            kicker: modeMeta.isSingle ? "Regional Analysis" : "Academic Regional Comparison",
-            noteLimit: 3,
-          })
-        : null,
-    dataRows,
+    notes: currentSurfaceFigure.notes,
+    previewNoteLimit: getFigureSurfaceMeta(surface).noteLimit,
+    figureWidth: currentSurfaceFigure.figureWidth,
+    figureHeight: currentSurfaceFigure.figureHeight,
+    figureSvg: currentSurfaceFigure.figureSvg,
+    exportFigureSvg: exportSurfaceFigure?.figureSvg || null,
+    exportFigureWidth: exportSurfaceFigure?.figureWidth || null,
+    exportFigureHeight: exportSurfaceFigure?.figureHeight || null,
+    dataRows: currentSurfaceFigure.dataRows,
     exportSuffix: `${granularity}-${state.compareTemporalShowAverage ? "moving-average" : "raw"}`,
   };
 }
 
 function buildMagnitudeCompareModal(context, options = {}) {
   const surface = options.surface || "modal";
-  const surfaceMeta = getFigureSurfaceMeta(surface);
   const modeMeta = buildAnalysisModeMeta(context);
   const binSize = 0.5;
-  const allMagnitudes = context.visibleRegions.flatMap((region) => region.events.map((event) => event.mag));
+  const allMagnitudes = context.allRegions.flatMap((region) => region.events.map((event) => event.mag));
   const minMagnitude = Math.max(
     PROJECT_MIN_MAGNITUDE,
     Math.floor(getMinNumber(allMagnitudes, PROJECT_MIN_MAGNITUDE) * 2) / 2
@@ -8573,7 +9479,7 @@ function buildMagnitudeCompareModal(context, options = {}) {
     minMagnitude + 1.5,
     Math.ceil(getMaxNumber(allMagnitudes, PROJECT_MIN_MAGNITUDE) * 2) / 2
   );
-  const distributions = context.visibleRegions.map((region) => ({
+  const distributions = context.allRegions.map((region) => ({
     region,
     distribution: buildMagnitudeDistribution(region.events, {
       minMagnitude,
@@ -8592,255 +9498,299 @@ function buildMagnitudeCompareModal(context, options = {}) {
   }
 
   const mode = state.compareMagnitudeMode;
-  const width =
-    surface === "preview"
-      ? 660
-      : Math.max(1280, 260 + bins.length * Math.max(96, context.visibleRegions.length * 34 + 28));
-  const height = surface === "preview" ? 392 : 760;
-  const plotFrame = createFigureFrame(
-    width,
-    height,
-    surface === "preview" ? 58 : 96,
-    surface === "preview" ? 26 : 56,
-    surface === "preview" ? 126 : 188,
-    surface === "preview" ? 84 : 158
-  );
-  const dataRows = [];
-  const plotPieces = [buildAcademicXAxisLine(plotFrame), buildAcademicYAxisLine(plotFrame)];
+  const renderSurfaceFigure = (surfaceContext, targetSurface) => {
+    const surfaceMeta = getFigureSurfaceMeta(targetSurface);
+    const maxPanelRegionCount = Math.max(...surfaceContext.regionPanels.map((group) => group.length), 1);
+    const width =
+      targetSurface === "preview"
+        ? 660
+        : Math.max(1280, 260 + bins.length * Math.max(96, maxPanelRegionCount * 34 + 28));
+    const legendItems =
+      modeMeta.isSingle && targetSurface === "preview"
+        ? []
+        : surfaceContext.allRegions.map((region) => ({
+            label: region.displayName,
+            color: region.compareColor,
+            dash: region.compareDash,
+            type: mode === "cumulative" ? "line" : "bar",
+          }));
+    const summaryItems = buildCompareSummaryItems(surfaceContext, [
+      { label: "分箱宽度", value: `ΔM = ${binSize.toFixed(1)}` },
+      { label: "统计模式", value: mode === "count" ? "频数" : mode === "share" ? "频率" : "累计占比" },
+      { label: "震级范围", value: `M${minMagnitude.toFixed(1)} - M${maxMagnitude.toFixed(1)}` },
+    ]);
+    const notes = [
+      `横轴为震级分箱，分箱宽度固定为 ΔM = ${binSize.toFixed(1)}；纵轴当前显示${
+        mode === "count" ? "频数" : mode === "share" ? "频率" : "累计占比"
+      }。`,
+      ...buildCompareCoverageNotes(surfaceContext, targetSurface),
+      mode === "cumulative"
+        ? "累计曲线表示从低震级到高震级的累积占比，用于比较不同地区目录的震级结构差异。"
+        : "当前采用分组柱状图，以地区为颜色和线型双编码，比较同一震级带内的区域差异。",
+      surfaceContext.lowSampleRegions.length
+        ? `以下地区样本较少（<20 条）：${surfaceContext.lowSampleRegions.map((region) => region.displayName).join("、")}。尾部震级带应谨慎解读。`
+        : "当前各地区样本量足以支撑基本的震级结构比较。",
+    ];
+    const chartTitle = modeMeta.isSingle ? `${modeMeta.primaryRegion} 震级分布分析` : "多地区震级分布对比";
+    const chartSubtitle = modeMeta.isSingle
+      ? `${modeMeta.primaryRegion} · 分箱宽度 ΔM = ${binSize.toFixed(1)}`
+      : `${buildCompareFigureRegionCaption(surfaceContext)} · 分箱宽度 ΔM = ${binSize.toFixed(1)}`;
+    const layout = createAcademicFigureLayout({
+      width,
+      surface: targetSurface,
+      title: chartTitle,
+      subtitle: chartSubtitle,
+      summaryItems,
+      legendItems,
+      notes,
+      panelHeights: surfaceContext.regionPanels.map(() => (targetSurface === "preview" ? 256 : 326)),
+      kicker: modeMeta.isSingle ? "Regional Analysis" : "Academic Regional Comparison",
+      noteLimit: surfaceMeta.noteLimit,
+    });
+    const theme = layout.theme;
+    const axisLabelOptions = {
+      fill: theme.subtle,
+      fontSize: surfaceMeta.compact ? 10.5 : 12,
+      fontWeight: 500,
+    };
+    const panels = [];
+    const dataRows = [];
 
-  if (mode === "cumulative") {
-    const yTicks = buildValueTicks(100, 5, 0);
-    plotPieces.push(
-      buildAcademicGridLines(plotFrame, yTicks, 0, 100, {
-        tickFormatter: (tick) => `${Math.round(tick)}%`,
-      })
-    );
-
-    distributions.forEach(({ region, distribution }) => {
-      const points = [];
-      distribution.bins.forEach((bin, index) => {
-        const x = plotFrame.left + scaleLinear(index, 0, Math.max(1, distribution.bins.length - 1), 0, plotFrame.width);
-        const y =
-          plotFrame.top + plotFrame.height - scaleLinear(bin.cumulativeRatio * 100, 0, 100, 0, plotFrame.height);
-        points.push([x, y]);
-        const analysisKey = registerCompareAnalysisTarget({
-          label: `${region.displayName} · ${bin.label}`,
-          eventIds: bin.eventIds,
-          highlightEventIds: sampleEventIds(bin.eventIds),
-          totalCount: bin.count,
-          tooltipTitle: `${region.displayName} · ${bin.label}`,
-          tooltipLines: [
-            `频数：${formatNumber(bin.count)} 条`,
-            `频率：${bin.share.toFixed(2)}%`,
-            `累计占比：${(bin.cumulativeRatio * 100).toFixed(2)}%`,
-          ],
-        });
-        dataRows.push({
-          region: region.displayName,
-          magnitude_bin: bin.label,
-          bin_midpoint: Number(bin.midpoint.toFixed(2)),
-          count: bin.count,
-          share_percent: Number(bin.share.toFixed(4)),
-          cumulative_percent: Number((bin.cumulativeRatio * 100).toFixed(4)),
-        });
-        if (
-          index % Math.max(1, Math.ceil(distribution.bins.length / (surface === "preview" ? 10 : 16))) === 0 ||
-          index === distribution.bins.length - 1
-        ) {
-          plotPieces.push(`
-            <circle
-              data-analysis-key="${analysisKey}"
-              cx="${x.toFixed(2)}"
-              cy="${y.toFixed(2)}"
-              r="${surface === "preview" ? "3.2" : "4"}"
-              fill="${escapeAttribute(region.compareColor)}"
-              stroke="#ffffff"
-              stroke-width="1.2"
-            ></circle>
-          `);
-        }
-      });
-      plotPieces.push(
-        `<path d="${buildLinePath(points)}" fill="none" stroke="${escapeAttribute(
-          region.compareColor
-        )}" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" stroke-dasharray="${escapeAttribute(
-          region.compareDash || ""
-        )}"></path>`
+    surfaceContext.regionPanels.forEach((regionGroup, panelIndex) => {
+      const panelDistributions = regionGroup.map((region) => ({
+        region,
+        distribution: buildMagnitudeDistribution(region.events, {
+          minMagnitude,
+          maxMagnitude,
+          binSize,
+        }),
+      }));
+      const slot = layout.panelSlots[panelIndex];
+      const yMax =
+        mode === "cumulative"
+          ? 100
+          : Math.max(
+              1,
+              ...panelDistributions.flatMap(({ distribution }) =>
+                distribution.bins.map((bin) => (mode === "share" ? bin.share : bin.count))
+              )
+            );
+      const yTicks = buildValueTicks(yMax, 5, 0);
+      const yTickLabels = yTicks.map((tick) =>
+        mode === "cumulative" || mode === "share" ? `${Math.round(tick)}%` : formatNumber(Math.round(tick))
       );
-    });
-  } else {
-    const yMax = Math.max(
-      1,
-      ...distributions.flatMap(({ distribution }) =>
-        distribution.bins.map((bin) => (mode === "share" ? bin.share : bin.count))
-      )
-    );
-    const yTicks = buildValueTicks(yMax, 5, 0);
-    plotPieces.push(
-      buildAcademicGridLines(plotFrame, yTicks, 0, yMax, {
-        tickFormatter: (tick) =>
-          mode === "share" ? `${tick.toFixed(0)}%` : formatNumber(Math.round(tick)),
-      })
-    );
+      const leftInset = Math.max(
+        targetSurface === "preview" ? 64 : 92,
+        28 + Math.ceil(Math.max(...yTickLabels.map((label) => measureAcademicText(label, axisLabelOptions))))
+      );
+      const rightInset = targetSurface === "preview" ? 20 : 28;
+      const bottomInset = targetSurface === "preview" ? 60 : 84;
+      const plotFrame = createPanelPlotFrame(width, slot, leftInset, rightInset, 12, bottomInset);
+      const plotPieces = [
+        buildAcademicGridLines(plotFrame, yTicks, 0, yMax, {
+          theme,
+          compact: surfaceMeta.compact,
+          tickFormatter: (tick) =>
+            mode === "cumulative" || mode === "share" ? `${Math.round(tick)}%` : formatNumber(Math.round(tick)),
+          fontOptions: axisLabelOptions,
+        }),
+        buildAcademicXAxisLine(plotFrame, theme),
+        buildAcademicYAxisLine(plotFrame, theme),
+      ];
 
-    const groupWidth = plotFrame.width / bins.length;
-    const slotWidth = Math.max(12, (groupWidth * 0.82) / Math.max(1, context.visibleRegions.length));
-    distributions.forEach(({ region, distribution }, regionIndex) => {
-      distribution.bins.forEach((bin, binIndex) => {
-        const value = mode === "share" ? bin.share : bin.count;
-        const heightValue = scaleLinear(value, 0, yMax, 0, plotFrame.height);
-        const x = plotFrame.left + groupWidth * binIndex + groupWidth * 0.09 + regionIndex * slotWidth;
-        const y = plotFrame.top + plotFrame.height - heightValue;
-        const analysisKey = registerCompareAnalysisTarget({
-          label: `${region.displayName} · ${bin.label}`,
-          eventIds: bin.eventIds,
-          highlightEventIds: sampleEventIds(bin.eventIds),
-          totalCount: bin.count,
-          tooltipTitle: `${region.displayName} · ${bin.label}`,
-          tooltipLines: [
-            `频数：${formatNumber(bin.count)} 条`,
-            `频率：${bin.share.toFixed(2)}%`,
-            `累计占比：${(bin.cumulativeRatio * 100).toFixed(2)}%`,
-          ],
+      if (mode === "cumulative") {
+        panelDistributions.forEach(({ region, distribution }) => {
+          const points = [];
+          distribution.bins.forEach((bin, index) => {
+            const x = plotFrame.left + scaleLinear(index, 0, Math.max(1, distribution.bins.length - 1), 0, plotFrame.width);
+            const y = plotFrame.top + plotFrame.height - scaleLinear(bin.cumulativeRatio * 100, 0, 100, 0, plotFrame.height);
+            points.push([x, y]);
+            const analysisKey = registerCompareAnalysisTarget({
+              label: `${region.displayName} · ${bin.label}`,
+              eventIds: bin.eventIds,
+              highlightEventIds: sampleEventIds(bin.eventIds),
+              totalCount: bin.count,
+              tooltipTitle: `${region.displayName} · ${bin.label}`,
+              tooltipLines: [
+                `频数：${formatNumber(bin.count)} 条`,
+                `频率：${bin.share.toFixed(2)}%`,
+                `累计占比：${(bin.cumulativeRatio * 100).toFixed(2)}%`,
+              ],
+            });
+            dataRows.push({
+              region: region.displayName,
+              magnitude_bin: bin.label,
+              bin_midpoint: Number(bin.midpoint.toFixed(2)),
+              count: bin.count,
+              share_percent: Number(bin.share.toFixed(4)),
+              cumulative_percent: Number((bin.cumulativeRatio * 100).toFixed(4)),
+            });
+            if (
+              index % Math.max(1, Math.ceil(distribution.bins.length / (targetSurface === "preview" ? 10 : 16))) === 0 ||
+              index === distribution.bins.length - 1
+            ) {
+              plotPieces.push(`
+                <circle
+                  data-analysis-key="${analysisKey}"
+                  cx="${x.toFixed(2)}"
+                  cy="${y.toFixed(2)}"
+                  r="${targetSurface === "preview" ? "3.2" : "4"}"
+                  fill="${escapeAttribute(region.compareColor)}"
+                  stroke="#ffffff"
+                  stroke-width="1.2"
+                ></circle>
+              `);
+            }
+          });
+          plotPieces.push(
+            `<path d="${buildLinePath(points)}" fill="none" stroke="${escapeAttribute(
+              region.compareColor
+            )}" stroke-width="${targetSurface === "preview" ? "2.4" : "3"}" stroke-linecap="round" stroke-linejoin="round" stroke-dasharray="${escapeAttribute(
+              region.compareDash || ""
+            )}"></path>`
+          );
         });
-        plotPieces.push(`
-          <g data-analysis-key="${analysisKey}">
-            <rect
-              x="${x.toFixed(2)}"
-              y="${y.toFixed(2)}"
-              width="${Math.max(8, slotWidth - 2).toFixed(2)}"
-              height="${Math.max(2, heightValue).toFixed(2)}"
-              rx="6"
-              fill="${escapeAttribute(region.compareColor)}"
-              opacity="${surface === "preview" ? "0.88" : "0.92"}"
-            ></rect>
-            <rect
-              class="chart-hitbox"
-              x="${x.toFixed(2)}"
-              y="${plotFrame.top.toFixed(2)}"
-              width="${Math.max(8, slotWidth - 2).toFixed(2)}"
-              height="${plotFrame.height.toFixed(2)}"
-            ></rect>
-          </g>
-        `);
-        dataRows.push({
-          region: region.displayName,
-          magnitude_bin: bin.label,
-          bin_midpoint: Number(bin.midpoint.toFixed(2)),
-          count: bin.count,
-          share_percent: Number(bin.share.toFixed(4)),
-          cumulative_percent: Number((bin.cumulativeRatio * 100).toFixed(4)),
+      } else {
+        const groupWidth = plotFrame.width / bins.length;
+        const slotWidth = Math.max(12, (groupWidth * 0.82) / Math.max(1, regionGroup.length));
+        panelDistributions.forEach(({ region, distribution }, regionIndex) => {
+          distribution.bins.forEach((bin, binIndex) => {
+            const value = mode === "share" ? bin.share : bin.count;
+            const heightValue = scaleLinear(value, 0, yMax, 0, plotFrame.height);
+            const x = plotFrame.left + groupWidth * binIndex + groupWidth * 0.09 + regionIndex * slotWidth;
+            const y = plotFrame.top + plotFrame.height - heightValue;
+            const analysisKey = registerCompareAnalysisTarget({
+              label: `${region.displayName} · ${bin.label}`,
+              eventIds: bin.eventIds,
+              highlightEventIds: sampleEventIds(bin.eventIds),
+              totalCount: bin.count,
+              tooltipTitle: `${region.displayName} · ${bin.label}`,
+              tooltipLines: [
+                `频数：${formatNumber(bin.count)} 条`,
+                `频率：${bin.share.toFixed(2)}%`,
+                `累计占比：${(bin.cumulativeRatio * 100).toFixed(2)}%`,
+              ],
+            });
+            plotPieces.push(`
+              <g data-analysis-key="${analysisKey}">
+                <rect
+                  x="${x.toFixed(2)}"
+                  y="${y.toFixed(2)}"
+                  width="${Math.max(8, slotWidth - 2).toFixed(2)}"
+                  height="${Math.max(2, heightValue).toFixed(2)}"
+                  rx="6"
+                  fill="${escapeAttribute(region.compareColor)}"
+                  opacity="${targetSurface === "preview" ? "0.88" : "0.92"}"
+                ></rect>
+                <rect
+                  class="chart-hitbox"
+                  x="${x.toFixed(2)}"
+                  y="${plotFrame.top.toFixed(2)}"
+                  width="${Math.max(8, slotWidth - 2).toFixed(2)}"
+                  height="${plotFrame.height.toFixed(2)}"
+                ></rect>
+              </g>
+            `);
+            dataRows.push({
+              region: region.displayName,
+              magnitude_bin: bin.label,
+              bin_midpoint: Number(bin.midpoint.toFixed(2)),
+              count: bin.count,
+              share_percent: Number(bin.share.toFixed(4)),
+              cumulative_percent: Number((bin.cumulativeRatio * 100).toFixed(4)),
+            });
+          });
         });
+      }
+
+      const labelIndices = buildAdaptiveEvenlySpacedIndices(
+        bins.map((bin) => bin.tickLabel),
+        plotFrame.width,
+        axisLabelOptions,
+        targetSurface === "preview" ? 4 : 8,
+        20
+      );
+      labelIndices.forEach((index) => {
+        const x = plotFrame.left + scaleLinear(index, 0, Math.max(1, bins.length - 1), 0, plotFrame.width);
+        plotPieces.push(
+          buildSvgTextMarkup([bins[index].tickLabel], x, plotFrame.top + plotFrame.height + 30, {
+            ...axisLabelOptions,
+            textAnchor: "middle",
+          })
+        );
+      });
+
+      panels.push({
+        panelLabel: buildRegionPanelLabel(regionGroup, panelIndex, surfaceContext.regionPanels.length),
+        plotFrame,
+        plotMarkup: plotPieces.join(""),
+        xAxisTitle: "震级 (Mw)",
+        yAxisTitle:
+          mode === "count" ? "事件数量" : mode === "share" ? "比例 (%)" : "累计比例 (%)",
       });
     });
-  }
 
-  const labelIndices = buildEvenlySpacedIndices(bins.length, surface === "preview" ? 4 : 8);
-  plotPieces.push(
-    ...labelIndices.map((index) => {
-      const x = plotFrame.left + scaleLinear(index, 0, Math.max(1, bins.length - 1), 0, plotFrame.width);
-      return `<text class="figure-axis-text" x="${x.toFixed(2)}" y="${(plotFrame.top + plotFrame.height + 28).toFixed(
-        2
-      )}" text-anchor="middle">${escapeHtml(bins[index].tickLabel)}</text>`;
-    })
-  );
+    return {
+      chartTitle: modeMeta.isSingle ? `${modeMeta.primaryRegion} 震级分布分析` : "多地区震级分布对比",
+      chartSubtitle:
+        modeMeta.isSingle
+          ? `${modeMeta.primaryRegion} · 分箱宽度 ΔM = ${binSize.toFixed(1)}`
+          : `${buildCompareFigureRegionCaption(surfaceContext)} · 分箱宽度 ΔM = ${binSize.toFixed(1)}`,
+      summaryItems,
+      notes,
+      figureWidth: width,
+      figureHeight: layout.height,
+      figureSvg: renderAcademicFigure({
+        layout,
+        width,
+        height: layout.height,
+        title: modeMeta.isSingle ? `${modeMeta.primaryRegion} 震级分布分析` : "多地区震级分布对比",
+        subtitle:
+          modeMeta.isSingle
+            ? `${modeMeta.primaryRegion} · 分箱宽度 ΔM = ${binSize.toFixed(1)}`
+            : `${buildCompareFigureRegionCaption(surfaceContext)} · 分箱宽度 ΔM = ${binSize.toFixed(1)}`,
+        summaryItems,
+        legendItems,
+        notes,
+        panels,
+        surface: targetSurface,
+        kicker: modeMeta.isSingle ? "Regional Analysis" : "Academic Regional Comparison",
+        noteLimit: surfaceMeta.noteLimit,
+      }),
+      dataRows,
+    };
+  };
 
-  const summaryItems = buildCompareSummaryItems(context, [
-    { label: "分箱宽度", value: `ΔM = ${binSize.toFixed(1)}` },
-    { label: "统计模式", value: mode === "count" ? "频数" : mode === "share" ? "频率" : "累计占比" },
-    { label: "震级范围", value: `M${minMagnitude.toFixed(1)} - M${maxMagnitude.toFixed(1)}` },
-  ]);
-  const notes = [
-    `横轴为震级分箱，分箱宽度固定为 ΔM = ${binSize.toFixed(1)}；纵轴当前显示${
-      mode === "count" ? "频数" : mode === "share" ? "频率" : "累计占比"
-    }。`,
-    mode === "cumulative"
-      ? "累计曲线表示从低震级到高震级的累积占比，用于比较不同地区目录的震级结构差异。"
-      : "当前采用分组柱状图，以地区为颜色编码，便于比较相同震级带内的区域差异。",
-    context.hiddenCount > 0
-      ? `为保证主图可读性，仅展示前 ${formatNumber(context.visibleRegions.length)} 个地区；完整选择请通过 CSV/JSON 导出查看。`
-      : "图例中的地区颜色在时间趋势、能量释放与热点对比模块中保持一致。",
-    context.lowSampleRegions.length
-      ? `以下地区样本较少（<20 条）：${context.lowSampleRegions.map((region) => region.displayName).join("、")}。建议谨慎解释尾部震级带。`
-      : "当前各地区样本量足以支撑基本的分布比较。",
-  ];
   const chartTitle = modeMeta.isSingle ? `${modeMeta.primaryRegion} 震级分布分析` : "多地区震级分布对比";
-  const chartSubtitle = modeMeta.isSingle
-    ? `${modeMeta.primaryRegion} · 分箱宽度 ΔM = ${binSize.toFixed(1)}`
-    : `${buildCompareFigureRegionCaption(context)} · 分箱宽度 ΔM = ${binSize.toFixed(1)}`;
+  const currentSurfaceFigure = renderSurfaceFigure(context, surface);
+  const exportSurfaceFigure =
+    surface === "modal" ? renderSurfaceFigure(buildCompareRegionContext("magnitude", { surface: "export" }), "export") : null;
 
   return {
     title: chartTitle,
     subtitle: modeMeta.isSingle
       ? `${modeMeta.primaryRegion} 当前地区分析，展示其震级结构、频数分箱与累计分布特征。`
       : buildCompareSubtitle(context, "比较不同地区的震级结构、频数分箱与累计分布特征。"),
-    summaryItems,
+    summaryItems: currentSurfaceFigure.summaryItems,
     controlGroups: buildCompareControlGroups("magnitude"),
-    notes,
-    previewNoteLimit: surfaceMeta.noteLimit,
-    figureWidth: width,
-    figureHeight: height,
-    figureSvg: renderAcademicFigure({
-      width,
-      height,
-      title: chartTitle,
-      subtitle: chartSubtitle,
-      summaryItems,
-      legendItems:
-        modeMeta.isSingle && surface === "preview"
-          ? []
-          : context.visibleRegions.map((region) => ({
-              label: region.displayName,
-              color: region.compareColor,
-              dash: region.compareDash,
-              type: mode === "cumulative" ? "line" : "bar",
-            })),
-      notes,
-      plotFrame,
-      plotMarkup: plotPieces.join(""),
-      xAxisTitle: "Magnitude (Mw)",
-      yAxisTitle: mode === "count" ? "Event Count" : mode === "share" ? "Proportion (%)" : "Cumulative Proportion (%)",
-      variant: surfaceMeta.variant,
-      compact: surfaceMeta.compact,
-      kicker: modeMeta.isSingle ? "Regional Analysis" : "Academic Regional Comparison",
-      noteLimit: surfaceMeta.noteLimit,
-    }),
-    exportFigureSvg:
-      surface === "modal"
-        ? renderAcademicFigure({
-            width,
-            height,
-            title: chartTitle,
-            subtitle: chartSubtitle,
-            summaryItems,
-            legendItems: context.visibleRegions.map((region) => ({
-              label: region.displayName,
-              color: region.compareColor,
-              dash: region.compareDash,
-              type: mode === "cumulative" ? "line" : "bar",
-            })),
-            notes,
-            plotFrame,
-            plotMarkup: plotPieces.join(""),
-            xAxisTitle: "Magnitude (Mw)",
-            yAxisTitle:
-              mode === "count" ? "Event Count" : mode === "share" ? "Proportion (%)" : "Cumulative Proportion (%)",
-            variant: "exportLight",
-            kicker: modeMeta.isSingle ? "Regional Analysis" : "Academic Regional Comparison",
-            noteLimit: 3,
-          })
-        : null,
-    dataRows,
+    notes: currentSurfaceFigure.notes,
+    previewNoteLimit: getFigureSurfaceMeta(surface).noteLimit,
+    figureWidth: currentSurfaceFigure.figureWidth,
+    figureHeight: currentSurfaceFigure.figureHeight,
+    figureSvg: currentSurfaceFigure.figureSvg,
+    exportFigureSvg: exportSurfaceFigure?.figureSvg || null,
+    exportFigureWidth: exportSurfaceFigure?.figureWidth || null,
+    exportFigureHeight: exportSurfaceFigure?.figureHeight || null,
+    dataRows: currentSurfaceFigure.dataRows,
     exportSuffix: mode,
   };
 }
 
 function buildDepthCompareModal(context, options = {}) {
   const surface = options.surface || "modal";
-  const surfaceMeta = getFigureSurfaceMeta(surface);
   const modeMeta = buildAnalysisModeMeta(context);
   const mode = state.compareDepthMode;
-  const regionLayers = context.visibleRegions.map((region) => ({
+  const regionLayers = context.allRegions.map((region) => ({
     region,
     layers: DEPTH_COMPARE_LAYERS.map((layer) => {
       const events = region.events.filter((event) => event.depth >= layer.min && event.depth < layer.max);
@@ -8861,184 +9811,234 @@ function buildDepthCompareModal(context, options = {}) {
     );
   }
 
-  const width = surface === "preview" ? 640 : Math.max(1280, 280 + context.visibleRegions.length * 96);
-  const height = surface === "preview" ? 404 : 760;
-  const plotFrame = createFigureFrame(
-    width,
-    height,
-    surface === "preview" ? 72 : 110,
-    surface === "preview" ? 28 : 60,
-    surface === "preview" ? 128 : 188,
-    surface === "preview" ? 96 : 168
-  );
-  const yMax =
-    mode === "share"
-      ? 100
-      : Math.max(1, ...regionLayers.map(({ layers }) => layers.reduce((sum, layer) => sum + layer.count, 0)));
-  const yTicks = buildValueTicks(yMax, 5, 0);
-  const plotPieces = [
-    buildAcademicGridLines(plotFrame, yTicks, 0, yMax, {
-      tickFormatter: (tick) => (mode === "share" ? `${Math.round(tick)}%` : formatNumber(Math.round(tick))),
-    }),
-    buildAcademicXAxisLine(plotFrame),
-    buildAcademicYAxisLine(plotFrame),
-  ];
-  const dataRows = [];
-  const groupWidth = plotFrame.width / Math.max(1, regionLayers.length);
-  const barWidth = Math.min(surface === "preview" ? 40 : 52, Math.max(surface === "preview" ? 18 : 28, groupWidth * 0.48));
+  const renderSurfaceFigure = (surfaceContext, targetSurface) => {
+    const surfaceMeta = getFigureSurfaceMeta(targetSurface);
+    const maxPanelRegionCount = Math.max(...surfaceContext.regionPanels.map((group) => group.length), 1);
+    const width = targetSurface === "preview" ? 640 : Math.max(1280, 320 + maxPanelRegionCount * 120);
+    const legendItems = DEPTH_COMPARE_LAYERS.map((layer) => ({
+      label: layer.label,
+      color: layer.color,
+      type: "bar",
+    }));
+    const summaryItems = buildCompareSummaryItems(surfaceContext, [
+      { label: "深度层级", value: "浅源 / 中源 / 深源" },
+      { label: "统计模式", value: mode === "share" ? "百分比堆叠" : "数量堆叠" },
+      { label: "样本量", value: `${formatNumber(surfaceContext.totalEvents)} 条` },
+    ]);
+    const notes = [
+      "深度层级采用地震学常用分层：浅源 0-69 km、中源 70-299 km、深源 300 km 及以上。",
+      ...buildCompareCoverageNotes(surfaceContext, targetSurface),
+      mode === "share"
+        ? "当前显示 100% 堆叠结构，占比差异更适合比较不同地区的深度构成。"
+        : "当前显示数量堆叠结构，更适合比较不同地区的绝对事件规模与层级贡献。",
+      "深度层级颜色采用稳定语义映射：浅源蓝色、中源橙色、深源红色。",
+      surfaceContext.lowSampleRegions.length
+        ? `以下地区样本较少（<20 条）：${surfaceContext.lowSampleRegions.map((region) => region.displayName).join("、")}。`
+        : "当前各地区样本量足以支撑深度层级对比。",
+    ];
+    const chartTitle = modeMeta.isSingle ? `${modeMeta.primaryRegion} 深度结构分析` : "多地区深度结构对比";
+    const chartSubtitle = modeMeta.isSingle
+      ? `${modeMeta.primaryRegion} · 深度层级 0-69 / 70-299 / 300+ km`
+      : `${buildCompareFigureRegionCaption(surfaceContext)} · 深度层级 0-69 / 70-299 / 300+ km`;
+    const layout = createAcademicFigureLayout({
+      width,
+      surface: targetSurface,
+      title: chartTitle,
+      subtitle: chartSubtitle,
+      summaryItems,
+      legendItems,
+      notes,
+      panelHeights: surfaceContext.regionPanels.map(() => (targetSurface === "preview" ? 260 : 322)),
+      kicker: modeMeta.isSingle ? "Regional Analysis" : "Academic Regional Comparison",
+      noteLimit: surfaceMeta.noteLimit,
+    });
+    const theme = layout.theme;
+    const axisLabelOptions = {
+      fill: theme.subtle,
+      fontSize: surfaceMeta.compact ? 10.5 : 12,
+      fontWeight: 500,
+      lineHeight: surfaceMeta.compact ? 13 : 16,
+    };
+    const panels = [];
+    const dataRows = [];
 
-  regionLayers.forEach(({ region, layers }, index) => {
-    const x = plotFrame.left + groupWidth * index + (groupWidth - barWidth) / 2;
-    let cumulativeHeight = 0;
-    layers.forEach((layer) => {
-      const value = mode === "share" ? layer.share : layer.count;
-      const segmentHeight = scaleLinear(value, 0, yMax, 0, plotFrame.height);
-      const y = plotFrame.top + plotFrame.height - cumulativeHeight - segmentHeight;
-      const analysisKey = registerCompareAnalysisTarget({
-        label: `${region.displayName} · ${layer.label}`,
-        eventIds: layer.eventIds,
-        highlightEventIds: sampleEventIds(layer.eventIds),
-        totalCount: layer.count,
-        tooltipTitle: `${region.displayName} · ${layer.label}`,
-        tooltipLines: [
-          `事件数量：${formatNumber(layer.count)} 条`,
-          `样本占比：${layer.share.toFixed(2)}%`,
-          `统计模式：${mode === "share" ? "百分比堆叠" : "数量堆叠"}`,
-        ],
+    surfaceContext.regionPanels.forEach((regionGroup, panelIndex) => {
+      const groupRegionLayers = regionGroup.map((region) => ({
+        region,
+        layers: DEPTH_COMPARE_LAYERS.map((layer) => {
+          const events = region.events.filter((event) => event.depth >= layer.min && event.depth < layer.max);
+          return {
+            ...layer,
+            count: events.length,
+            share: region.events.length ? (events.length / region.events.length) * 100 : 0,
+            eventIds: events.map((event) => event.id),
+          };
+        }),
+      }));
+      const yMax =
+        mode === "share"
+          ? 100
+          : Math.max(1, ...groupRegionLayers.map(({ layers }) => layers.reduce((sum, layer) => sum + layer.count, 0)));
+      const yTicks = buildValueTicks(yMax, 5, 0);
+      const yTickLabels = yTicks.map((tick) =>
+        mode === "share" ? `${Math.round(tick)}%` : formatNumber(Math.round(tick))
+      );
+      const leftInset = Math.max(
+        targetSurface === "preview" ? 70 : 96,
+        28 + Math.ceil(Math.max(...yTickLabels.map((label) => measureAcademicText(label, axisLabelOptions))))
+      );
+      const rightInset = targetSurface === "preview" ? 22 : 30;
+      const bottomInset = targetSurface === "preview" ? 78 : 112;
+      const plotFrame = createPanelPlotFrame(width, layout.panelSlots[panelIndex], leftInset, rightInset, 12, bottomInset);
+      const plotPieces = [
+        buildAcademicGridLines(plotFrame, yTicks, 0, yMax, {
+          theme,
+          compact: surfaceMeta.compact,
+          tickFormatter: (tick) =>
+            mode === "share" ? `${Math.round(tick)}%` : formatNumber(Math.round(tick)),
+          fontOptions: axisLabelOptions,
+        }),
+        buildAcademicXAxisLine(plotFrame, theme),
+        buildAcademicYAxisLine(plotFrame, theme),
+      ];
+      const groupWidth = plotFrame.width / Math.max(1, groupRegionLayers.length);
+      const barWidth = Math.min(
+        targetSurface === "preview" ? 40 : 54,
+        Math.max(targetSurface === "preview" ? 18 : 28, groupWidth * 0.48)
+      );
+
+      groupRegionLayers.forEach(({ region, layers }, index) => {
+        const x = plotFrame.left + groupWidth * index + (groupWidth - barWidth) / 2;
+        let cumulativeHeight = 0;
+        layers.forEach((layer) => {
+          const value = mode === "share" ? layer.share : layer.count;
+          const segmentHeight = scaleLinear(value, 0, yMax, 0, plotFrame.height);
+          const y = plotFrame.top + plotFrame.height - cumulativeHeight - segmentHeight;
+          const analysisKey = registerCompareAnalysisTarget({
+            label: `${region.displayName} · ${layer.label}`,
+            eventIds: layer.eventIds,
+            highlightEventIds: sampleEventIds(layer.eventIds),
+            totalCount: layer.count,
+            tooltipTitle: `${region.displayName} · ${layer.label}`,
+            tooltipLines: [
+              `事件数量：${formatNumber(layer.count)} 条`,
+              `样本占比：${layer.share.toFixed(2)}%`,
+              `统计模式：${mode === "share" ? "百分比堆叠" : "数量堆叠"}`,
+            ],
+          });
+
+          plotPieces.push(`
+            <g data-analysis-key="${analysisKey}">
+              <rect
+                x="${x.toFixed(2)}"
+                y="${y.toFixed(2)}"
+                width="${barWidth.toFixed(2)}"
+                height="${Math.max(2, segmentHeight).toFixed(2)}"
+                rx="6"
+                fill="${escapeAttribute(layer.color)}"
+                opacity="0.92"
+              ></rect>
+              <rect
+                class="chart-hitbox"
+                x="${x.toFixed(2)}"
+                y="${y.toFixed(2)}"
+                width="${barWidth.toFixed(2)}"
+                height="${Math.max(2, segmentHeight).toFixed(2)}"
+              ></rect>
+            </g>
+          `);
+
+          dataRows.push({
+            region: region.displayName,
+            depth_layer: layer.label,
+            count: layer.count,
+            share_percent: Number(layer.share.toFixed(4)),
+          });
+          cumulativeHeight += segmentHeight;
+        });
+
+        const labelMaxWidth = Math.min(targetSurface === "preview" ? 84 : 118, groupWidth * 0.9);
+        plotPieces.push(
+          buildWrappedAxisLabelMarkup(
+            targetSurface === "preview"
+              ? truncateAcademicText(region.displayName, labelMaxWidth, axisLabelOptions)
+              : region.displayName,
+            x + barWidth / 2,
+            plotFrame.top + plotFrame.height + 26,
+            labelMaxWidth,
+            axisLabelOptions,
+            { maxLines: targetSurface === "preview" ? 1 : 2, textAnchor: "middle" }
+          )
+        );
       });
 
-      plotPieces.push(`
-        <g data-analysis-key="${analysisKey}">
-          <rect
-            x="${x.toFixed(2)}"
-            y="${y.toFixed(2)}"
-            width="${barWidth.toFixed(2)}"
-            height="${Math.max(2, segmentHeight).toFixed(2)}"
-            rx="6"
-            fill="${escapeAttribute(layer.color)}"
-            opacity="0.9"
-          ></rect>
-          <rect
-            class="chart-hitbox"
-            x="${x.toFixed(2)}"
-            y="${y.toFixed(2)}"
-            width="${barWidth.toFixed(2)}"
-            height="${Math.max(2, segmentHeight).toFixed(2)}"
-          ></rect>
-        </g>
-      `);
-
-      dataRows.push({
-        region: region.displayName,
-        depth_layer: layer.label,
-        count: layer.count,
-        share_percent: Number(layer.share.toFixed(4)),
+      panels.push({
+        panelLabel: buildRegionPanelLabel(regionGroup, panelIndex, surfaceContext.regionPanels.length),
+        plotFrame,
+        plotMarkup: plotPieces.join(""),
+        xAxisTitle: "地区",
+        yAxisTitle: mode === "share" ? "比例 (%)" : "事件数量",
       });
-      cumulativeHeight += segmentHeight;
     });
 
-    plotPieces.push(
-      `<text class="figure-axis-text" x="${(x + barWidth / 2).toFixed(2)}" y="${(plotFrame.top + plotFrame.height + 30).toFixed(
-        2
-      )}" text-anchor="middle" transform="rotate(-24 ${(x + barWidth / 2).toFixed(2)} ${(plotFrame.top + plotFrame.height + 30).toFixed(
-        2
-      )})">${escapeHtml(region.shortAxisLabel)}</text>`
-    );
-  });
+    return {
+      chartTitle,
+      chartSubtitle,
+      summaryItems,
+      notes,
+      figureWidth: width,
+      figureHeight: layout.height,
+      figureSvg: renderAcademicFigure({
+        layout,
+        width,
+        height: layout.height,
+        title: chartTitle,
+        subtitle: chartSubtitle,
+        summaryItems,
+        legendItems,
+        notes,
+        panels,
+        surface: targetSurface,
+        kicker: modeMeta.isSingle ? "Regional Analysis" : "Academic Regional Comparison",
+        noteLimit: surfaceMeta.noteLimit,
+      }),
+      dataRows,
+    };
+  };
 
-  const summaryItems = buildCompareSummaryItems(context, [
-    { label: "深度层级", value: "浅源 / 中源 / 深源" },
-    { label: "统计模式", value: mode === "share" ? "百分比堆叠" : "数量堆叠" },
-    { label: "样本量", value: `${formatNumber(context.totalEvents)} 条` },
-  ]);
-  const notes = [
-    "深度层级采用地震学常用分层：浅源 0-69 km、中源 70-299 km、深源 300 km 及以上。",
-    mode === "share"
-      ? "当前显示 100% 堆叠结构，占比差异更适合比较不同地区的深度构成。"
-      : "当前显示数量堆叠结构，更适合比较不同地区的绝对事件规模与层级贡献。",
-    "深度层级颜色采用语义化映射：浅源蓝色、中源橙色、深源红色。",
-    context.lowSampleRegions.length
-      ? `以下地区样本较少（<20 条）：${context.lowSampleRegions.map((region) => region.displayName).join("、")}。`
-      : "当前各地区样本量足以支撑深度层级对比。",
-  ];
   const chartTitle = modeMeta.isSingle ? `${modeMeta.primaryRegion} 深度结构分析` : "多地区深度结构对比";
-  const chartSubtitle = modeMeta.isSingle
-    ? `${modeMeta.primaryRegion} · 深度层级 0-69 / 70-299 / 300+ km`
-    : `${buildCompareFigureRegionCaption(context)} · 深度层级 0-69 / 70-299 / 300+ km`;
+  const currentSurfaceFigure = renderSurfaceFigure(context, surface);
+  const exportSurfaceFigure =
+    surface === "modal" ? renderSurfaceFigure(buildCompareRegionContext("depth", { surface: "export" }), "export") : null;
 
   return {
     title: chartTitle,
     subtitle: modeMeta.isSingle
       ? `${modeMeta.primaryRegion} 当前地区分析，展示浅源、中源与深源地震的层次构成。`
       : buildCompareSubtitle(context, "比较不同地区浅源、中源与深源地震的层次构成差异。"),
-    summaryItems,
+    summaryItems: currentSurfaceFigure.summaryItems,
     controlGroups: buildCompareControlGroups("depth"),
-    notes,
-    previewNoteLimit: surfaceMeta.noteLimit,
-    figureWidth: width,
-    figureHeight: height,
-    figureSvg: renderAcademicFigure({
-      width,
-      height,
-      title: chartTitle,
-      subtitle: chartSubtitle,
-      summaryItems,
-      legendItems: DEPTH_COMPARE_LAYERS.map((layer) => ({
-        label: layer.label,
-        color: layer.color,
-        type: "bar",
-      })),
-      notes,
-      plotFrame,
-      plotMarkup: plotPieces.join(""),
-      xAxisTitle: "Region",
-      yAxisTitle: mode === "share" ? "Proportion (%)" : "Event Count",
-      variant: surfaceMeta.variant,
-      compact: surfaceMeta.compact,
-      kicker: modeMeta.isSingle ? "Regional Analysis" : "Academic Regional Comparison",
-      noteLimit: surfaceMeta.noteLimit,
-    }),
-    exportFigureSvg:
-      surface === "modal"
-        ? renderAcademicFigure({
-            width,
-            height,
-            title: chartTitle,
-            subtitle: chartSubtitle,
-            summaryItems,
-            legendItems: DEPTH_COMPARE_LAYERS.map((layer) => ({
-              label: layer.label,
-              color: layer.color,
-              type: "bar",
-            })),
-            notes,
-            plotFrame,
-            plotMarkup: plotPieces.join(""),
-            xAxisTitle: "Region",
-            yAxisTitle: mode === "share" ? "Proportion (%)" : "Event Count",
-            variant: "exportLight",
-            kicker: modeMeta.isSingle ? "Regional Analysis" : "Academic Regional Comparison",
-            noteLimit: 3,
-          })
-        : null,
-    dataRows,
+    notes: currentSurfaceFigure.notes,
+    previewNoteLimit: getFigureSurfaceMeta(surface).noteLimit,
+    figureWidth: currentSurfaceFigure.figureWidth,
+    figureHeight: currentSurfaceFigure.figureHeight,
+    figureSvg: currentSurfaceFigure.figureSvg,
+    exportFigureSvg: exportSurfaceFigure?.figureSvg || null,
+    exportFigureWidth: exportSurfaceFigure?.figureWidth || null,
+    exportFigureHeight: exportSurfaceFigure?.figureHeight || null,
+    dataRows: currentSurfaceFigure.dataRows,
     exportSuffix: mode,
   };
 }
 
 function buildEnergyCompareModal(context, options = {}) {
   const surface = options.surface || "modal";
-  const surfaceMeta = getFigureSurfaceMeta(surface);
   const modeMeta = buildAnalysisModeMeta(context);
-  const granularity = state.compareEnergyGranularity;
+  const granularity = normalizeCompareTimeGranularity(state.compareEnergyGranularity);
   const scaleMode = state.compareEnergyScale;
-  const analyses = context.visibleRegions.map((region) => ({
-    region,
-    analysis: buildEnergyTrendAnalysis(region.events, state.rangeStart, state.rangeEnd, {
-      granularity,
-    }),
-  }));
-  const points = analyses[0]?.analysis?.points || [];
+  const points = buildEnergyTrendAnalysis(context.allRegions[0]?.events || [], state.rangeStart, state.rangeEnd, {
+    granularity,
+  }).points;
   if (!points.length) {
     return buildCompareEmptyPayload(
       modeMeta.isSingle ? "地区能量释放分析" : "多地区能量释放对比",
@@ -9048,191 +10048,232 @@ function buildEnergyCompareModal(context, options = {}) {
     );
   }
 
-  const width = surface === "preview" ? 640 : 1320;
-  const height = surface === "preview" ? 392 : 760;
-  const plotFrame = createFigureFrame(
-    width,
-    height,
-    surface === "preview" ? 62 : 104,
-    surface === "preview" ? 26 : 60,
-    surface === "preview" ? 126 : 188,
-    surface === "preview" ? 82 : 152
-  );
-  const ySeriesValues = analyses.flatMap(({ analysis }) =>
-    analysis.points.map((point) => (scaleMode === "log" ? point.logEnergy : point.cumulativeEnergy))
-  );
-  const yMin = scaleMode === "log" ? getMinNumber(ySeriesValues, 0) : 0;
-  const yMax = Math.max(1, getMaxNumber(ySeriesValues, 1));
-  const yTicks = buildValueTicks(yMax, 5, yMin);
-  const xIndices = buildEvenlySpacedIndices(points.length, surface === "preview" ? 4 : 6);
-  const plotPieces = [
-    buildAcademicGridLines(plotFrame, yTicks, yMin, yMax, {
-      tickFormatter: (tick) => (scaleMode === "log" ? tick.toFixed(1) : formatEnergyValue(tick)),
-    }),
-    buildAcademicXAxisLine(plotFrame),
-    buildAcademicYAxisLine(plotFrame),
-  ];
-  const dataRows = [];
+  const renderSurfaceFigure = (surfaceContext, targetSurface) => {
+    const surfaceMeta = getFigureSurfaceMeta(targetSurface);
+    const width = targetSurface === "preview" ? 640 : targetSurface === "export" ? 1480 : 1320;
+    const legendItems =
+      modeMeta.isSingle && targetSurface === "preview"
+        ? []
+        : surfaceContext.allRegions.map((region) => ({
+            label: region.displayName,
+            color: region.compareColor,
+            dash: region.compareDash,
+            type: "line",
+          }));
+    const summaryItems = buildCompareSummaryItems(surfaceContext, [
+      { label: "能量尺度", value: scaleMode === "log" ? "log10(E/J)" : "累计能量 (J)" },
+      { label: "时间粒度", value: buildTemporalGranularityLabel(granularity, state.rangeEnd - state.rangeStart) },
+      { label: "总样本量", value: `${formatNumber(surfaceContext.totalEvents)} 条` },
+    ]);
+    const notes = [
+      "能量值按经验关系 log10E = 1.5M + 4.8 估算，适合比较相对强弱，不等同于严格物理实测。",
+      ...buildCompareCoverageNotes(surfaceContext, targetSurface),
+      scaleMode === "log"
+        ? "当前主图采用对数坐标，便于在多数量级差异下比较不同地区的能量释放过程。"
+        : "当前主图采用线性坐标，更适合观察累计能量的绝对增长幅度。",
+      surfaceContext.lowSampleRegions.length
+        ? `以下地区样本较少（<20 条）：${surfaceContext.lowSampleRegions.map((region) => region.displayName).join("、")}。`
+        : "当前各地区样本量足以支撑基本的能量过程比较。",
+    ];
+    const chartTitle = modeMeta.isSingle ? `${modeMeta.primaryRegion} 能量释放分析` : "多地区能量释放对比";
+    const chartSubtitle = modeMeta.isSingle
+      ? `${modeMeta.primaryRegion} · 估算公式 log10E = 1.5M + 4.8`
+      : `${buildCompareFigureRegionCaption(surfaceContext)} · 估算公式 log10E = 1.5M + 4.8`;
+    const layout = createAcademicFigureLayout({
+      width,
+      surface: targetSurface,
+      title: chartTitle,
+      subtitle: chartSubtitle,
+      summaryItems,
+      legendItems,
+      notes,
+      panelHeights: surfaceContext.regionPanels.map(() => (targetSurface === "preview" ? 250 : 318)),
+      kicker: modeMeta.isSingle ? "Regional Analysis" : "Academic Regional Comparison",
+      noteLimit: surfaceMeta.noteLimit,
+    });
+    const theme = layout.theme;
+    const axisLabelOptions = {
+      fill: theme.subtle,
+      fontSize: surfaceMeta.compact ? 10.5 : 12,
+      fontWeight: 500,
+    };
+    const panels = [];
+    const dataRows = [];
 
-  analyses.forEach(({ region, analysis }) => {
-    const linePoints = [];
-    analysis.points.forEach((point, index) => {
-      const x = plotFrame.left + scaleLinear(index, 0, Math.max(1, analysis.points.length - 1), 0, plotFrame.width);
-      const metricValue = scaleMode === "log" ? point.logEnergy : point.cumulativeEnergy;
-      const y = plotFrame.top + plotFrame.height - scaleLinear(metricValue, yMin, yMax, 0, plotFrame.height);
-      linePoints.push([x, y]);
-      const analysisKey = registerCompareAnalysisTarget({
-        label: `${region.displayName} · ${point.shortLabel}`,
-        eventIds: point.eventIds,
-        highlightEventIds: sampleEventIds(point.eventIds),
-        totalCount: point.count,
-        tooltipTitle: `${region.displayName} · ${point.label}`,
-        tooltipLines: [
-          `累计事件：${formatNumber(point.cumulativeCount)} 条`,
-          `累计能量：${formatEnergyValue(point.cumulativeEnergy)}`,
-          `log10(E/J)：${point.logEnergy.toFixed(2)}`,
-        ],
+    surfaceContext.regionPanels.forEach((regionGroup, panelIndex) => {
+      const analyses = regionGroup.map((region) => ({
+        region,
+        analysis: buildEnergyTrendAnalysis(region.events, state.rangeStart, state.rangeEnd, {
+          granularity,
+        }),
+      }));
+      const ySeriesValues = analyses.flatMap(({ analysis }) =>
+        analysis.points.map((point) => (scaleMode === "log" ? point.logEnergy : point.cumulativeEnergy))
+      );
+      const yMin = scaleMode === "log" ? getMinNumber(ySeriesValues, 0) : 0;
+      const yMax = Math.max(1, getMaxNumber(ySeriesValues, 1));
+      const yTicks = buildValueTicks(yMax, 5, yMin);
+      const yTickLabels = yTicks.map((tick) => (scaleMode === "log" ? tick.toFixed(1) : formatEnergyValue(tick)));
+      const leftInset = Math.max(
+        targetSurface === "preview" ? 72 : 102,
+        28 + Math.ceil(Math.max(...yTickLabels.map((label) => measureAcademicText(label, axisLabelOptions))))
+      );
+      const rightInset = targetSurface === "preview" ? 22 : 30;
+      const bottomInset = targetSurface === "preview" ? 58 : 78;
+      const plotFrame = createPanelPlotFrame(width, layout.panelSlots[panelIndex], leftInset, rightInset, 12, bottomInset);
+      const xIndices = buildAdaptiveEvenlySpacedIndices(
+        analyses[0]?.analysis?.points.map((point) => point.shortLabel) || [],
+        plotFrame.width,
+        axisLabelOptions,
+        targetSurface === "preview" ? 4 : 6,
+        18
+      );
+      const plotPieces = [
+        buildAcademicGridLines(plotFrame, yTicks, yMin, yMax, {
+          theme,
+          compact: surfaceMeta.compact,
+          tickFormatter: (tick) => (scaleMode === "log" ? tick.toFixed(1) : formatEnergyValue(tick)),
+          fontOptions: axisLabelOptions,
+        }),
+        buildAcademicXAxisLine(plotFrame, theme),
+        buildAcademicYAxisLine(plotFrame, theme),
+      ];
+
+      analyses.forEach(({ region, analysis }) => {
+        const linePoints = [];
+        analysis.points.forEach((point, index) => {
+          const x = plotFrame.left + scaleLinear(index, 0, Math.max(1, analysis.points.length - 1), 0, plotFrame.width);
+          const metricValue = scaleMode === "log" ? point.logEnergy : point.cumulativeEnergy;
+          const y = plotFrame.top + plotFrame.height - scaleLinear(metricValue, yMin, yMax, 0, plotFrame.height);
+          linePoints.push([x, y]);
+          const analysisKey = registerCompareAnalysisTarget({
+            label: `${region.displayName} · ${point.shortLabel}`,
+            eventIds: point.eventIds,
+            highlightEventIds: sampleEventIds(point.eventIds),
+            totalCount: point.count,
+            tooltipTitle: `${region.displayName} · ${point.label}`,
+            tooltipLines: [
+              `累计事件：${formatNumber(point.cumulativeCount)} 条`,
+              `累计能量：${formatEnergyValue(point.cumulativeEnergy)}`,
+              `log10(E/J)：${point.logEnergy.toFixed(2)}`,
+            ],
+          });
+
+          dataRows.push({
+            region: region.displayName,
+            time_bucket: point.label,
+            cumulative_event_count: point.cumulativeCount,
+            cumulative_energy_j: Number(point.cumulativeEnergy.toFixed(2)),
+            log10_energy_j: Number(point.logEnergy.toFixed(4)),
+          });
+
+          if (
+            index % Math.max(1, Math.ceil(analysis.points.length / (targetSurface === "preview" ? 10 : 16))) === 0 ||
+            index === analysis.points.length - 1
+          ) {
+            plotPieces.push(`
+              <circle
+                data-analysis-key="${analysisKey}"
+                cx="${x.toFixed(2)}"
+                cy="${y.toFixed(2)}"
+                r="${targetSurface === "preview" ? "3.2" : "4"}"
+                fill="${escapeAttribute(region.compareColor)}"
+                stroke="#ffffff"
+                stroke-width="1.2"
+              ></circle>
+            `);
+          }
+        });
+
+        plotPieces.push(
+          `<path d="${buildLinePath(linePoints)}" fill="none" stroke="${escapeAttribute(
+            region.compareColor
+          )}" stroke-width="${targetSurface === "preview" ? "2.4" : "3.1"}" stroke-linecap="round" stroke-linejoin="round" stroke-dasharray="${escapeAttribute(
+            region.compareDash || ""
+          )}"></path>`
+        );
       });
 
-      dataRows.push({
-        region: region.displayName,
-        time_bucket: point.label,
-        cumulative_event_count: point.cumulativeCount,
-        cumulative_energy_j: Number(point.cumulativeEnergy.toFixed(2)),
-        log10_energy_j: Number(point.logEnergy.toFixed(4)),
+      xIndices.forEach((index) => {
+        const x = plotFrame.left + scaleLinear(index, 0, Math.max(1, points.length - 1), 0, plotFrame.width);
+        plotPieces.push(
+          buildSvgTextMarkup([points[index].shortLabel], x, plotFrame.top + plotFrame.height + 30, {
+            ...axisLabelOptions,
+            textAnchor: "middle",
+          })
+        );
       });
 
-      if (
-        index % Math.max(1, Math.ceil(analysis.points.length / (surface === "preview" ? 10 : 16))) === 0 ||
-        index === analysis.points.length - 1
-      ) {
-        plotPieces.push(`
-          <circle
-            data-analysis-key="${analysisKey}"
-            cx="${x.toFixed(2)}"
-            cy="${y.toFixed(2)}"
-            r="${surface === "preview" ? "3.2" : "4"}"
-            fill="${escapeAttribute(region.compareColor)}"
-            stroke="#ffffff"
-            stroke-width="1.2"
-          ></circle>
-        `);
-      }
+      panels.push({
+        panelLabel: buildRegionPanelLabel(regionGroup, panelIndex, surfaceContext.regionPanels.length),
+        plotFrame,
+        plotMarkup: plotPieces.join(""),
+        xAxisTitle: "时间",
+        yAxisTitle: scaleMode === "log" ? "log10(E/J)" : "累计能量 (J)",
+      });
     });
 
-    plotPieces.push(
-      `<path d="${buildLinePath(linePoints)}" fill="none" stroke="${escapeAttribute(
-        region.compareColor
-      )}" stroke-width="${surface === "preview" ? "2.4" : "3.2"}" stroke-linecap="round" stroke-linejoin="round" stroke-dasharray="${escapeAttribute(
-        region.compareDash || ""
-      )}"></path>`
-    );
-  });
+    return {
+      chartTitle: modeMeta.isSingle ? `${modeMeta.primaryRegion} 能量释放分析` : "多地区能量释放对比",
+      chartSubtitle:
+        modeMeta.isSingle
+          ? `${modeMeta.primaryRegion} · 估算公式 log10E = 1.5M + 4.8`
+          : `${buildCompareFigureRegionCaption(surfaceContext)} · 估算公式 log10E = 1.5M + 4.8`,
+      summaryItems,
+      notes,
+      figureWidth: width,
+      figureHeight: layout.height,
+      figureSvg: renderAcademicFigure({
+        layout,
+        width,
+        height: layout.height,
+        title: modeMeta.isSingle ? `${modeMeta.primaryRegion} 能量释放分析` : "多地区能量释放对比",
+        subtitle:
+          modeMeta.isSingle
+            ? `${modeMeta.primaryRegion} · 估算公式 log10E = 1.5M + 4.8`
+            : `${buildCompareFigureRegionCaption(surfaceContext)} · 估算公式 log10E = 1.5M + 4.8`,
+        summaryItems,
+        legendItems,
+        notes,
+        panels,
+        surface: targetSurface,
+        kicker: modeMeta.isSingle ? "Regional Analysis" : "Academic Regional Comparison",
+        noteLimit: surfaceMeta.noteLimit,
+      }),
+      dataRows,
+    };
+  };
 
-  plotPieces.push(
-    ...xIndices.map((index) => {
-      const x = plotFrame.left + scaleLinear(index, 0, Math.max(1, points.length - 1), 0, plotFrame.width);
-      return `<text class="figure-axis-text" x="${x.toFixed(2)}" y="${(plotFrame.top + plotFrame.height + 28).toFixed(
-        2
-      )}" text-anchor="middle">${escapeHtml(points[index].shortLabel)}</text>`;
-    })
-  );
-
-  const summaryItems = buildCompareSummaryItems(context, [
-    { label: "能量尺度", value: scaleMode === "log" ? "log10(E/J)" : "Cumulative Energy (J)" },
-    { label: "时间粒度", value: buildTemporalGranularityLabel(granularity, state.rangeEnd - state.rangeStart) },
-    { label: "总样本量", value: `${formatNumber(context.totalEvents)} 条` },
-  ]);
-  const notes = [
-    "能量值按经验关系 log10E = 1.5M + 4.8 估算，适合比较相对强弱，不等同于严格物理实测。",
-    scaleMode === "log"
-      ? "当前主图采用对数坐标，便于在多数量级差异下比较不同地区的能量释放过程。"
-      : "当前主图采用线性坐标，更适合观察累计能量的绝对增长幅度。",
-    context.hiddenCount > 0
-      ? `主图仅展示前 ${formatNumber(context.visibleRegions.length)} 个地区；其余 ${formatNumber(
-          context.hiddenCount
-        )} 个地区请通过缩小范围后再比较。`
-      : "各地区在不同模块中采用稳定的颜色映射，并辅以不同线型增强区分度。",
-    context.lowSampleRegions.length
-      ? `以下地区样本较少（<20 条）：${context.lowSampleRegions.map((region) => region.displayName).join("、")}。`
-      : "当前各地区样本量足以支撑基本的能量过程比较。",
-  ];
   const chartTitle = modeMeta.isSingle ? `${modeMeta.primaryRegion} 能量释放分析` : "多地区能量释放对比";
-  const chartSubtitle = modeMeta.isSingle
-    ? `${modeMeta.primaryRegion} · 估算公式 log10E = 1.5M + 4.8`
-    : `${buildCompareFigureRegionCaption(context)} · 估算公式 log10E = 1.5M + 4.8`;
+  const currentSurfaceFigure = renderSurfaceFigure(context, surface);
+  const exportSurfaceFigure =
+    surface === "modal" ? renderSurfaceFigure(buildCompareRegionContext("energy", { surface: "export" }), "export") : null;
 
   return {
     title: chartTitle,
     subtitle: modeMeta.isSingle
       ? `${modeMeta.primaryRegion} 当前地区分析，展示其在当前时间范围内的累计能量释放过程。`
       : buildCompareSubtitle(context, "比较不同地区在统一时间范围内的累计能量释放过程。"),
-    summaryItems,
+    summaryItems: currentSurfaceFigure.summaryItems,
     controlGroups: buildCompareControlGroups("energy"),
-    notes,
-    previewNoteLimit: surfaceMeta.noteLimit,
-    figureWidth: width,
-    figureHeight: height,
-    figureSvg: renderAcademicFigure({
-      width,
-      height,
-      title: chartTitle,
-      subtitle: chartSubtitle,
-      summaryItems,
-      legendItems:
-        modeMeta.isSingle && surface === "preview"
-          ? []
-          : context.visibleRegions.map((region) => ({
-              label: region.displayName,
-              color: region.compareColor,
-              dash: region.compareDash,
-              type: "line",
-            })),
-      notes,
-      plotFrame,
-      plotMarkup: plotPieces.join(""),
-      xAxisTitle: "Time",
-      yAxisTitle: scaleMode === "log" ? "log10(E/J)" : "Cumulative Energy (J)",
-      variant: surfaceMeta.variant,
-      compact: surfaceMeta.compact,
-      kicker: modeMeta.isSingle ? "Regional Analysis" : "Academic Regional Comparison",
-      noteLimit: surfaceMeta.noteLimit,
-    }),
-    exportFigureSvg:
-      surface === "modal"
-        ? renderAcademicFigure({
-            width,
-            height,
-            title: chartTitle,
-            subtitle: chartSubtitle,
-            summaryItems,
-            legendItems: context.visibleRegions.map((region) => ({
-              label: region.displayName,
-              color: region.compareColor,
-              dash: region.compareDash,
-              type: "line",
-            })),
-            notes,
-            plotFrame,
-            plotMarkup: plotPieces.join(""),
-            xAxisTitle: "Time",
-            yAxisTitle: scaleMode === "log" ? "log10(E/J)" : "Cumulative Energy (J)",
-            variant: "exportLight",
-            kicker: modeMeta.isSingle ? "Regional Analysis" : "Academic Regional Comparison",
-            noteLimit: 3,
-          })
-        : null,
-    dataRows,
+    notes: currentSurfaceFigure.notes,
+    previewNoteLimit: getFigureSurfaceMeta(surface).noteLimit,
+    figureWidth: currentSurfaceFigure.figureWidth,
+    figureHeight: currentSurfaceFigure.figureHeight,
+    figureSvg: currentSurfaceFigure.figureSvg,
+    exportFigureSvg: exportSurfaceFigure?.figureSvg || null,
+    exportFigureWidth: exportSurfaceFigure?.figureWidth || null,
+    exportFigureHeight: exportSurfaceFigure?.figureHeight || null,
+    dataRows: currentSurfaceFigure.dataRows,
     exportSuffix: `${granularity}-${scaleMode}`,
   };
 }
 
 function buildHotspotCompareModal(context, options = {}) {
   const surface = options.surface || "modal";
-  const surfaceMeta = getFigureSurfaceMeta(surface);
   const modeMeta = buildAnalysisModeMeta(context);
   const metric = HOTSPOT_COMPARE_METRICS[state.hotspotCompareMetric] || HOTSPOT_COMPARE_METRICS.count;
-  const rows = [...context.visibleRegions].sort((left, right) => metric.value(right) - metric.value(left));
+  const rows = [...context.allRegions].sort((left, right) => metric.value(right) - metric.value(left));
   if (!rows.length) {
     return buildCompareEmptyPayload(
       modeMeta.isSingle ? "地区核心指标分析" : "多地区区域热点对比",
@@ -9242,165 +10283,227 @@ function buildHotspotCompareModal(context, options = {}) {
     );
   }
 
-  const width = surface === "preview" ? 640 : 1280;
-  const height =
-    surface === "preview" ? Math.max(300, 180 + rows.length * 34) : Math.max(700, 260 + rows.length * 48);
-  const plotFrame = createFigureFrame(
-    width,
-    height,
-    surface === "preview" ? 148 : 240,
-    surface === "preview" ? 30 : 78,
-    surface === "preview" ? 116 : 188,
-    surface === "preview" ? 64 : 120
-  );
-  const maxValue = Math.max(1, getMaxNumber(rows.map((row) => metric.value(row)), 1));
-  const xTicks = buildValueTicks(maxValue, 5, 0);
-  const plotPieces = [
-    buildAcademicGridLinesHorizontal(plotFrame, xTicks, 0, maxValue, {
-      tickFormatter: (tick) =>
-        state.hotspotCompareMetric === "count"
-          ? formatNumber(Math.round(tick))
-          : metric.unitLabel === "km"
-            ? tick.toFixed(0)
-            : tick.toFixed(1),
-    }),
-    buildAcademicXAxisLine(plotFrame),
-    buildAcademicYAxisLine(plotFrame),
-  ];
-  const slotHeight = plotFrame.height / Math.max(1, rows.length);
-  const barHeight = Math.min(surface === "preview" ? 20 : 26, Math.max(14, slotHeight * 0.54));
-  const dataRows = [];
-
-  rows.forEach((region, index) => {
-    const y = plotFrame.top + slotHeight * index + (slotHeight - barHeight) / 2;
-    const widthValue = scaleLinear(metric.value(region), 0, maxValue, 0, plotFrame.width);
-    const analysisKey = registerCompareAnalysisTarget(buildHotspotAnalysisTarget(region));
-    plotPieces.push(`
-      <g data-analysis-key="${analysisKey}">
-        <rect
-          x="${plotFrame.left.toFixed(2)}"
-          y="${y.toFixed(2)}"
-          width="${Math.max(4, widthValue).toFixed(2)}"
-          height="${barHeight.toFixed(2)}"
-          rx="8"
-          fill="${escapeAttribute(region.compareColor)}"
-          opacity="0.92"
-        ></rect>
-        <rect
-          class="chart-hitbox"
-          x="${plotFrame.left.toFixed(2)}"
-          y="${y.toFixed(2)}"
-          width="${plotFrame.width.toFixed(2)}"
-          height="${barHeight.toFixed(2)}"
-        ></rect>
-      </g>
-      <text class="figure-axis-text" x="${(plotFrame.left - 14).toFixed(2)}" y="${(y + barHeight / 2 + 4).toFixed(
-      2
-    )}" text-anchor="end">${escapeHtml(truncate(region.displayName, 24))}</text>
-      <text class="figure-axis-text" x="${(plotFrame.left + widthValue + 10).toFixed(2)}" y="${(y + barHeight / 2 + 4).toFixed(
-      2
-    )}" text-anchor="start">${escapeHtml(metric.formatValue(metric.value(region)))}</text>
-    `);
-    dataRows.push({
-      region: region.displayName,
-      count: region.count,
-      avg_magnitude: Number(region.avgMag.toFixed(4)),
-      max_magnitude: Number(region.maxMag.toFixed(4)),
-      avg_depth_km: Number(region.avgDepth.toFixed(4)),
-      share_percent: Number((region.share * 100).toFixed(4)),
+  const renderSurfaceFigure = (surfaceContext, targetSurface) => {
+    const surfaceMeta = getFigureSurfaceMeta(targetSurface);
+    const sortedPanels = surfaceContext.regionPanels.map((regionGroup) =>
+      [...regionGroup].sort((left, right) => metric.value(right) - metric.value(left))
+    );
+    const maxPanelRowCount = Math.max(...sortedPanels.map((panel) => panel.length), 1);
+    const width = targetSurface === "preview" ? 640 : 1360;
+    const summaryItems = buildCompareSummaryItems(surfaceContext, [
+      { label: "比较指标", value: metric.label },
+      { label: "排序方式", value: `${metric.label} 降序` },
+      { label: "样本量", value: `${formatNumber(surfaceContext.totalEvents)} 条` },
+    ]);
+    const notes = [
+      "当前主图采用横向条形图，以提升地区名称与数值的同时可读性，适合课程汇报与论文附图导出。",
+      ...buildCompareCoverageNotes(surfaceContext, targetSurface),
+      "排序严格基于当前筛选后的地震目录实时计算；点击条形可反向高亮地图中的对应地区事件。",
+      state.activeCountryKey !== "all" && state.activeCountryKey !== UNCLASSIFIED_COUNTRY_KEY
+        ? `当前处于 ${getCountryDisplayNameByKey(state.activeCountryKey)} 视图，图中条目优先表示国内子区域；若缺少子区域字段，则自动回退为国家整体。`
+        : "当前处于全球视图，条目表示国家/地区级聚合结果。",
+    ];
+    const chartTitle = modeMeta.isSingle
+      ? `${modeMeta.primaryRegion} ${metric.label}分析`
+      : `多地区区域热点对比 · ${metric.label}`;
+    const chartSubtitle = modeMeta.isSingle
+      ? `${modeMeta.primaryRegion} · 当前筛选目录实时聚合`
+      : `${buildCompareFigureRegionCaption(surfaceContext)} · 排名基于当前筛选目录实时聚合`;
+    const panelHeights = sortedPanels.map((panelRows) =>
+      targetSurface === "preview"
+        ? Math.max(240, 152 + panelRows.length * 34)
+        : Math.max(308, 174 + panelRows.length * 42)
+    );
+    const layout = createAcademicFigureLayout({
+      width,
+      surface: targetSurface,
+      title: chartTitle,
+      subtitle: chartSubtitle,
+      summaryItems,
+      legendItems: [],
+      notes,
+      panelHeights,
+      kicker: modeMeta.isSingle ? "Regional Analysis" : "Academic Regional Comparison",
+      noteLimit: surfaceMeta.noteLimit,
     });
-  });
+    const theme = layout.theme;
+    const axisLabelOptions = {
+      fill: theme.subtle,
+      fontSize: surfaceMeta.compact ? 10.5 : 12,
+      fontWeight: 500,
+      lineHeight: surfaceMeta.compact ? 13 : 16,
+    };
+    const valueLabelOptions = {
+      fill: theme.subtle,
+      fontSize: surfaceMeta.compact ? 10.5 : 12,
+      fontWeight: 600,
+    };
+    const panels = [];
+    const dataRows = [];
 
-  const summaryItems = buildCompareSummaryItems(context, [
-    { label: "比较指标", value: metric.label },
-    { label: "排序方式", value: `${metric.label} 降序` },
-    { label: "样本量", value: `${formatNumber(context.totalEvents)} 条` },
-  ]);
-  const notes = [
-    "当前主图采用横向条形图，以提升地区名称与数值的同时可读性，适合课程汇报与论文附图导出。",
-    "排序严格基于当前筛选后的地震目录实时计算；点击条形可反向高亮地图中的对应地区事件。",
-    state.activeCountryKey !== "all" && state.activeCountryKey !== UNCLASSIFIED_COUNTRY_KEY
-      ? `当前处于 ${getCountryDisplayNameByKey(state.activeCountryKey)} 视图，图中条目优先表示国内子区域；若缺少子区域字段，则自动回退为国家整体。`
-      : "当前处于全球视图，条目表示国家/地区级聚合结果。",
-    context.hiddenCount > 0
-      ? `当前共选择 ${formatNumber(context.allRegions.length)} 个地区，主图展示前 ${formatNumber(
-          context.visibleRegions.length
-        )} 个；完整结果可通过导出数据查看。`
-      : "当前所有选中地区均已纳入主图。",
-  ];
+    sortedPanels.forEach((panelRows, panelIndex) => {
+      const labelMaxWidth = targetSurface === "preview" ? 118 : 170;
+      const valueSamples = panelRows.map((row) => metric.formatValue(metric.value(row)));
+      const leftInset = Math.max(
+        targetSurface === "preview" ? 140 : 220,
+        32 + Math.ceil(measureWrappedLabelWidth(panelRows.map((row) => row.displayName), labelMaxWidth, axisLabelOptions, 2))
+      );
+      const rightInset = Math.max(
+        targetSurface === "preview" ? 72 : 96,
+        30 + Math.ceil(Math.max(...valueSamples.map((value) => measureAcademicText(value, valueLabelOptions))))
+      );
+      const bottomInset = targetSurface === "preview" ? 54 : 74;
+      const plotFrame = createPanelPlotFrame(width, layout.panelSlots[panelIndex], leftInset, rightInset, 10, bottomInset);
+      const maxValue = Math.max(1, getMaxNumber(panelRows.map((row) => metric.value(row)), 1));
+      const xTicks = buildValueTicks(maxValue, 5, 0);
+      const plotPieces = [
+        buildAcademicGridLinesHorizontal(plotFrame, xTicks, 0, maxValue, {
+          theme,
+          compact: surfaceMeta.compact,
+          tickFormatter: (tick) =>
+            state.hotspotCompareMetric === "count"
+              ? formatNumber(Math.round(tick))
+              : metric.unitLabel === "km"
+                ? tick.toFixed(0)
+                : tick.toFixed(1),
+          fontOptions: axisLabelOptions,
+        }),
+        buildAcademicXAxisLine(plotFrame, theme),
+        buildAcademicYAxisLine(plotFrame, theme),
+      ];
+      const slotHeight = plotFrame.height / Math.max(1, panelRows.length);
+      const barHeight = Math.min(targetSurface === "preview" ? 20 : 26, Math.max(14, slotHeight * 0.54));
+
+      panelRows.forEach((region, index) => {
+        const y = plotFrame.top + slotHeight * index + (slotHeight - barHeight) / 2;
+        const widthValue = scaleLinear(metric.value(region), 0, maxValue, 0, plotFrame.width);
+        const analysisKey = registerCompareAnalysisTarget(buildHotspotAnalysisTarget(region));
+        const labelLines = wrapAcademicText(region.displayName, labelMaxWidth, axisLabelOptions).slice(
+          0,
+          targetSurface === "preview" ? 1 : 2
+        );
+        const labelMetrics = measureTextLines(labelLines, axisLabelOptions);
+        const labelY = y + barHeight / 2 - labelMetrics.height / 2 + axisLabelOptions.fontSize;
+        const valueText = metric.formatValue(metric.value(region));
+        const valueWidth = measureAcademicText(valueText, valueLabelOptions);
+        const valueFitsInside = widthValue > valueWidth + 18;
+        const valueX = valueFitsInside ? plotFrame.left + widthValue - 8 : plotFrame.left + widthValue + 10;
+        const valueFill = valueFitsInside ? "#ffffff" : theme.subtle;
+
+        plotPieces.push(`
+          <g data-analysis-key="${analysisKey}">
+            <rect
+              x="${plotFrame.left.toFixed(2)}"
+              y="${y.toFixed(2)}"
+              width="${Math.max(4, widthValue).toFixed(2)}"
+              height="${barHeight.toFixed(2)}"
+              rx="8"
+              fill="${escapeAttribute(region.compareColor)}"
+              opacity="0.92"
+            ></rect>
+            <rect
+              class="chart-hitbox"
+              x="${plotFrame.left.toFixed(2)}"
+              y="${y.toFixed(2)}"
+              width="${plotFrame.width.toFixed(2)}"
+              height="${barHeight.toFixed(2)}"
+            ></rect>
+          </g>
+        `);
+        plotPieces.push(
+          buildSvgTextMarkup(labelLines, plotFrame.left - 14, labelY, {
+            ...axisLabelOptions,
+            textAnchor: "end",
+          })
+        );
+        plotPieces.push(
+          buildSvgTextMarkup([valueText], valueX, y + barHeight / 2 + 4, {
+            ...valueLabelOptions,
+            fill: valueFill,
+            textAnchor: valueFitsInside ? "end" : "start",
+          })
+        );
+
+        dataRows.push({
+          region: region.displayName,
+          count: region.count,
+          avg_magnitude: Number(region.avgMag.toFixed(4)),
+          max_magnitude: Number(region.maxMag.toFixed(4)),
+          avg_depth_km: Number(region.avgDepth.toFixed(4)),
+          share_percent: Number((region.share * 100).toFixed(4)),
+        });
+      });
+
+      panels.push({
+        panelLabel: buildRegionPanelLabel(panelRows, panelIndex, sortedPanels.length),
+        plotFrame,
+        plotMarkup: plotPieces.join(""),
+        xAxisTitle: metric.axisLabel,
+        yAxisTitle: "地区",
+      });
+    });
+
+    return {
+      chartTitle,
+      chartSubtitle,
+      summaryItems,
+      notes,
+      figureWidth: width,
+      figureHeight: layout.height,
+      figureSvg: renderAcademicFigure({
+        layout,
+        width,
+        height: layout.height,
+        title: chartTitle,
+        subtitle: chartSubtitle,
+        summaryItems,
+        legendItems: [],
+        notes,
+        panels,
+        surface: targetSurface,
+        kicker: modeMeta.isSingle ? "Regional Analysis" : "Academic Regional Comparison",
+        noteLimit: surfaceMeta.noteLimit,
+      }),
+      dataRows,
+    };
+  };
+
   const chartTitle = modeMeta.isSingle
     ? `${modeMeta.primaryRegion} ${metric.label}分析`
     : `多地区区域热点对比 · ${metric.label}`;
-  const chartSubtitle = modeMeta.isSingle
-    ? `${modeMeta.primaryRegion} · 当前筛选目录实时聚合`
-    : `${buildCompareFigureRegionCaption(context)} · 排名基于当前筛选目录实时聚合`;
+  const currentSurfaceFigure = renderSurfaceFigure(context, surface);
+  const exportSurfaceFigure =
+    surface === "modal" ? renderSurfaceFigure(buildCompareRegionContext("hotspot", { surface: "export" }), "export") : null;
 
   return {
     title: chartTitle,
     subtitle: modeMeta.isSingle
       ? `${modeMeta.primaryRegion} 当前地区分析，展示其在 ${metric.label} 指标上的整体水平。`
       : buildCompareSubtitle(context, "比较当前已选地区在核心统计指标上的整体差异。"),
-    summaryItems,
+    summaryItems: currentSurfaceFigure.summaryItems,
     controlGroups: buildCompareControlGroups("hotspot"),
-    notes,
-    previewNoteLimit: surfaceMeta.noteLimit,
-    figureWidth: width,
-    figureHeight: height,
-    figureSvg: renderAcademicFigure({
-      width,
-      height,
-      title: chartTitle,
-      subtitle: chartSubtitle,
-      summaryItems,
-      legendItems: [],
-      notes,
-      plotFrame,
-      plotMarkup: plotPieces.join(""),
-      xAxisTitle: metric.axisLabel,
-      yAxisTitle: "Region",
-      variant: surfaceMeta.variant,
-      compact: surfaceMeta.compact,
-      kicker: modeMeta.isSingle ? "Regional Analysis" : "Academic Regional Comparison",
-      noteLimit: surfaceMeta.noteLimit,
-    }),
-    exportFigureSvg:
-      surface === "modal"
-        ? renderAcademicFigure({
-            width,
-            height,
-            title: chartTitle,
-            subtitle: chartSubtitle,
-            summaryItems,
-            legendItems: [],
-            notes,
-            plotFrame,
-            plotMarkup: plotPieces.join(""),
-            xAxisTitle: metric.axisLabel,
-            yAxisTitle: "Region",
-            variant: "exportLight",
-            kicker: modeMeta.isSingle ? "Regional Analysis" : "Academic Regional Comparison",
-            noteLimit: 3,
-          })
-        : null,
-    dataRows,
+    notes: currentSurfaceFigure.notes,
+    previewNoteLimit: getFigureSurfaceMeta(surface).noteLimit,
+    figureWidth: currentSurfaceFigure.figureWidth,
+    figureHeight: currentSurfaceFigure.figureHeight,
+    figureSvg: currentSurfaceFigure.figureSvg,
+    exportFigureSvg: exportSurfaceFigure?.figureSvg || null,
+    exportFigureWidth: exportSurfaceFigure?.figureWidth || null,
+    exportFigureHeight: exportSurfaceFigure?.figureHeight || null,
+    dataRows: currentSurfaceFigure.dataRows,
     exportSuffix: state.hotspotCompareMetric,
   };
 }
 
 function buildTemporalGranularityLabel(value, spanMs) {
-  if (value && value !== "auto") {
-    return { day: "日", week: "周", month: "月", year: "年" }[value] || "自动";
-  }
-  if (spanMs > 240 * DAY_MS && spanMs <= 6 * YEAR_MS) {
-    return "月";
-  }
-  if (spanMs > 45 * DAY_MS && spanMs <= 240 * DAY_MS) {
-    return "周";
+  const normalized = normalizeCompareTimeGranularity(value, "auto");
+  if (normalized && normalized !== "auto") {
+    return { month: "月", year: "年" }[normalized] || "自动";
   }
   if (spanMs > 6 * YEAR_MS) {
     return "年";
   }
-  return "日";
+  return "月";
 }
 
 function exportCompareFigure(format) {
@@ -9415,8 +10518,14 @@ function exportCompareFigure(format) {
   const exportHeight = payload.exportFigureHeight || payload.figureHeight;
   const filename = buildCompareExportFilename(payload, format);
   if (format === "svg") {
-    downloadBlob(filename, new Blob([exportSvg], { type: "image/svg+xml;charset=utf-8" }));
-    setStatus("已导出 SVG 图表。");
+    try {
+      const preparedSvg = prepareSvgMarkupForExport(exportSvg, exportWidth, exportHeight);
+      downloadBlob(filename, new Blob([preparedSvg], { type: "image/svg+xml;charset=utf-8" }));
+      setStatus("已导出 SVG 图表。");
+    } catch (error) {
+      console.warn("Failed to export SVG figure", error);
+      setStatus(`SVG 图表导出失败：${formatSvgExportError(error)}`, "error");
+    }
     return;
   }
 
@@ -9426,7 +10535,7 @@ function exportCompareFigure(format) {
     })
     .catch((error) => {
       console.warn("Failed to export PNG figure", error);
-      setStatus("PNG 图表导出失败。", "error");
+      setStatus(`PNG 图表导出失败：${formatSvgExportError(error)}`, "error");
     });
 }
 
@@ -9512,13 +10621,75 @@ function buildCsvContent(rows) {
   );
 }
 
+function stabilizeSvgMarkupForExport(svgMarkup, width, height) {
+  const safeMarkup = String(svgMarkup || "").trim();
+  if (!safeMarkup) {
+    return safeMarkup;
+  }
+  return safeMarkup.replace(/<svg\b([^>]*)>/i, (match, attributes) => {
+    const nextAttributes = attributes
+      .replace(/\swidth="[^"]*"/i, "")
+      .replace(/\sheight="[^"]*"/i, "")
+      .replace(/\sviewBox="[^"]*"/i, "")
+      .replace(/\sxmlns=(["'])[^"']*\1/i, "");
+    return `<svg${nextAttributes} width="${width}" height="${height}" viewBox="0 0 ${width} ${height}" xmlns="http://www.w3.org/2000/svg">`;
+  });
+}
+
+function extractSvgParserError(parsedDocument) {
+  const parserError = parsedDocument?.querySelector?.("parsererror");
+  if (!parserError) {
+    return null;
+  }
+  return parserError.textContent?.replace(/\s+/g, " ").trim() || "Invalid SVG markup";
+}
+
+function formatSvgExportError(error) {
+  const message = error instanceof Error ? error.message : String(error || "未知错误");
+  return message
+    .replace(/^SVG_EXPORT_INVALID:\s*/i, "")
+    .replace(/^SVG_EXPORT_EMPTY$/i, "导出 SVG 为空。")
+    .trim();
+}
+
+function prepareSvgMarkupForExport(svgMarkup, width, height) {
+  const stabilizedSvg = stabilizeSvgMarkupForExport(svgMarkup, width, height)
+    .replace(/\uFEFF/g, "")
+    .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F]/g, "");
+  if (!stabilizedSvg) {
+    throw new Error("SVG_EXPORT_EMPTY");
+  }
+  if (typeof DOMParser === "undefined" || typeof XMLSerializer === "undefined") {
+    return stabilizedSvg;
+  }
+
+  const parser = new DOMParser();
+  const parsed = parser.parseFromString(stabilizedSvg, "image/svg+xml");
+  const parserError = extractSvgParserError(parsed);
+  if (parserError) {
+    throw new Error(`SVG_EXPORT_INVALID: ${parserError}`);
+  }
+  const root = parsed.documentElement;
+  if (!root || root.nodeName.toLowerCase() !== "svg") {
+    throw new Error("SVG_EXPORT_INVALID: Missing root <svg> element.");
+  }
+  return new XMLSerializer().serializeToString(root);
+}
+
 function exportSvgMarkupAsPng(svgMarkup, width, height, filename) {
   return new Promise((resolve, reject) => {
-    const blob = new Blob([svgMarkup], { type: "image/svg+xml;charset=utf-8" });
+    let preparedSvg = "";
+    try {
+      preparedSvg = prepareSvgMarkupForExport(svgMarkup, width, height);
+    } catch (error) {
+      reject(error);
+      return;
+    }
+    const blob = new Blob([preparedSvg], { type: "image/svg+xml;charset=utf-8" });
     const url = URL.createObjectURL(blob);
     const image = new Image();
     image.onload = () => {
-      const scale = 2;
+      const scale = 3;
       const canvas = document.createElement("canvas");
       canvas.width = Math.round(width * scale);
       canvas.height = Math.round(height * scale);
@@ -9528,6 +10699,8 @@ function exportSvgMarkupAsPng(svgMarkup, width, height, filename) {
         reject(new Error("2D context unavailable"));
         return;
       }
+      context2d.imageSmoothingEnabled = true;
+      context2d.imageSmoothingQuality = "high";
       context2d.fillStyle = "#ffffff";
       context2d.fillRect(0, 0, canvas.width, canvas.height);
       context2d.drawImage(image, 0, 0, canvas.width, canvas.height);
@@ -9545,6 +10718,7 @@ function exportSvgMarkupAsPng(svgMarkup, width, height, filename) {
       URL.revokeObjectURL(url);
       reject(error);
     };
+    image.decoding = "sync";
     image.src = url;
   });
 }
@@ -10227,28 +11401,16 @@ function buildTemporalAnalysis(events, start, end, options = {}) {
   }
 
   const spanMs = end - start;
-  const requestedGranularity = options.granularity || "auto";
-  let bucketMs = DAY_MS;
-  let granularityLabel = "日";
+  const requestedGranularity = normalizeCompareTimeGranularity(options.granularity, "auto");
+  let bucketMs = 30 * DAY_MS;
+  let granularityLabel = "月";
 
-  if (requestedGranularity === "day") {
-    bucketMs = DAY_MS;
-    granularityLabel = "日";
-  } else if (requestedGranularity === "week") {
-    bucketMs = 7 * DAY_MS;
-    granularityLabel = "周";
-  } else if (requestedGranularity === "month") {
+  if (requestedGranularity === "month") {
     bucketMs = 30 * DAY_MS;
     granularityLabel = "月";
   } else if (requestedGranularity === "year") {
     bucketMs = YEAR_MS;
     granularityLabel = "年";
-  } else if (spanMs > 240 * DAY_MS && spanMs <= 6 * YEAR_MS) {
-    bucketMs = 30 * DAY_MS;
-    granularityLabel = "月";
-  } else if (spanMs > 45 * DAY_MS && spanMs <= 240 * DAY_MS) {
-    bucketMs = 7 * DAY_MS;
-    granularityLabel = "周";
   } else if (spanMs > 6 * YEAR_MS) {
     bucketMs = YEAR_MS;
     granularityLabel = "年";
@@ -10262,7 +11424,7 @@ function buildTemporalAnalysis(events, start, end, options = {}) {
       start: bucketStart,
       end: bucketEnd,
       label: `${formatShortDate(bucketStart)} - ${formatShortDate(bucketEnd)}`,
-      shortLabel: formatBucketLabel(bucketStart, spanMs),
+      shortLabel: formatBucketLabel(bucketStart, Math.max(spanMs, bucketMs)),
       count: 0,
       maxMagnitude: 0,
       meanMagnitude: 0,
@@ -10452,7 +11614,7 @@ function buildMagnitudeDepthScatter(events) {
     };
   }
 
-  const sampledEvents = sampleScatterEvents(events, 360);
+  const sampledEvents = sampleScatterEvents(events, { limit: 360, purpose: "interaction" });
   const minMagnitude = Math.max(
     PROJECT_MIN_MAGNITUDE,
     Math.floor(getMinNumber(sampledEvents.map((event) => event.mag), PROJECT_MIN_MAGNITUDE) * 2) / 2
@@ -10602,9 +11764,16 @@ function computeFocusedEventContext(quake, events) {
   };
 }
 
-function sampleScatterEvents(events, limit) {
-  if (events.length <= limit) {
-    return [...events].reverse();
+function sampleScatterEvents(events, limitOrOptions) {
+  const config =
+    typeof limitOrOptions === "object"
+      ? { limit: limitOrOptions.limit, purpose: limitOrOptions.purpose || "interaction", allowSampling: limitOrOptions.allowSampling }
+      : { limit: limitOrOptions, purpose: "interaction", allowSampling: true };
+  const limit = Math.max(1, Number(config.limit) || events.length);
+  const shouldSample = config.purpose !== "export" && config.allowSampling !== false;
+
+  if (!shouldSample || events.length <= limit) {
+    return [...events].sort((left, right) => left.time - right.time);
   }
 
   const featuredCount = Math.min(Math.floor(limit * 0.35), 140);
@@ -10632,12 +11801,22 @@ function sampleScatterEvents(events, limit) {
   return [...featured, ...sampled].sort((left, right) => left.time - right.time);
 }
 
-function sampleEventIds(eventIds, limit = 80) {
+function sampleEventIds(eventIds, limitOrOptions = 80) {
+  const config =
+    typeof limitOrOptions === "object"
+      ? {
+          limit: limitOrOptions.limit,
+          purpose: limitOrOptions.purpose || "interaction",
+          allowSampling: limitOrOptions.allowSampling,
+        }
+      : { limit: limitOrOptions, purpose: "interaction", allowSampling: true };
   if (!Array.isArray(eventIds) || !eventIds.length) {
     return [];
   }
-  if (eventIds.length <= limit) {
-    return eventIds;
+  const limit = Math.max(1, Number(config.limit) || 80);
+  const shouldSample = config.purpose !== "export" && config.allowSampling !== false;
+  if (!shouldSample || eventIds.length <= limit) {
+    return [...eventIds];
   }
 
   const direct = eventIds.slice(0, Math.ceil(limit / 2));
