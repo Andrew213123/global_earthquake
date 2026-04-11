@@ -289,7 +289,12 @@ const NATURAL_EARTH_TEXTURES_URL = Cesium.buildModuleUrl("Assets/Textures/Natura
 const BOUNDARY_ALTITUDE = 14000;
 const BOUNDARY_POINT_PRECISION = 4;
 const BOUNDARY_DATELINE_THRESHOLD = 170;
-const BOUNDARY_LAYER_URL = "./data/world-countries.geo.json";
+const BOUNDARY_LAYER_URL = "./data/geoboundaries/adm0.geojson";
+const SUBDIVISION_MANIFEST_URL = "./data/geoboundaries/adm1-manifest.json";
+const SUBDIVISION_BASE_URL = "./data/geoboundaries/";
+const COUNTRY_INDEX_CELL_SIZE = 6;
+const SUBDIVISION_INDEX_CELL_SIZE = 3;
+const SUBDIVISION_FALLBACK_REGION_ZH = "离岸/未落入行政区";
 const UNCLASSIFIED_COUNTRY_KEY = "__unclassified__";
 const UNCLASSIFIED_COUNTRY_NAME = "International Waters / Offshore";
 const UNCLASSIFIED_COUNTRY_NAME_ZH = "国际海域/离岸区域";
@@ -601,10 +606,15 @@ const state = {
   hotspotSelectedKeys: [],
   countryBoundaries: [],
   countryByKey: new Map(),
-  countryAliases: [],
   countryEntries: new Map(),
   countrySearchIndex: [],
+  countrySpatialIndex: new Map(),
   countrySearchQuery: "",
+  subdivisionManifest: new Map(),
+  subdivisionManifestPromise: null,
+  subdivisionDatasets: new Map(),
+  subdivisionLoadPromises: new Map(),
+  subdivisionAssignedCountries: new Set(),
   activeContinentKey: "all",
   hoveredCountryKey: null,
   hoveredCountryCursor: null,
@@ -1777,6 +1787,7 @@ function setActiveCountryFilter(countryKey, options = {}) {
   if (options.flyTo !== false) {
     flyToCountry(nextKey);
   }
+  ensureSubdivisionDatasetForCountry(nextKey);
   setStatus(buildCountryFilterStatusMessage());
 }
 
@@ -2982,7 +2993,11 @@ async function persistLiveSupplementToDatabase(events, requestId) {
     });
 
     if (!response.ok) {
-      throw new Error(`LOCAL_INGEST_HTTP ${response.status}`);
+      const outdatedServerHint =
+        response.status === 404
+          ? "；本地服务未暴露 /api/storage/ingest，通常是启动了旧版 StaticServer，请重启本地服务。"
+          : "";
+      throw new Error(`LOCAL_INGEST_HTTP ${response.status}${outdatedServerHint}`);
     }
 
     const payload = await response.json();
@@ -3109,6 +3124,18 @@ function mergeCatalogEvents(events) {
 
   if (touchedEvents.length) {
     assignCountriesToEvents(touchedEvents);
+    const touchedCountryKeys = [
+      ...new Set(
+        touchedEvents
+          .map((event) => event.countryKey)
+          .filter((countryKey) => countryKey && countryKey !== UNCLASSIFIED_COUNTRY_KEY)
+      ),
+    ];
+    for (const countryKey of touchedCountryKeys) {
+      if (hasLoadedSubdivisionDatasetForCountry(countryKey)) {
+        assignSubdivisionsToCountryEvents(countryKey, touchedEvents);
+      }
+    }
   }
 
   state.catalogLoaded = state.rawEvents.length > 0;
@@ -3203,6 +3230,18 @@ function appendCatalogBatch(payload, options = {}, isFirstBatch = false) {
   state.catalogLoadedCount = state.rawEvents.length;
   state.catalogEnd = Math.max(state.catalogEnd || 0, getLatestEventTimestamp(newEvents));
   assignCountriesToEvents(newEvents);
+  const newCountryKeys = [
+    ...new Set(
+      newEvents
+        .map((event) => event.countryKey)
+        .filter((countryKey) => countryKey && countryKey !== UNCLASSIFIED_COUNTRY_KEY)
+    ),
+  ];
+  for (const countryKey of newCountryKeys) {
+    if (hasLoadedSubdivisionDatasetForCountry(countryKey)) {
+      assignSubdivisionsToCountryEvents(countryKey, newEvents);
+    }
+  }
   populateCountryFilterOptions(state.rawEvents);
 
   const previousFilteredCount = state.filteredEvents.length;
@@ -3614,6 +3653,15 @@ async function fetchChunkPages(
 function applyFiltersAndRender() {
   state.minMagnitude = clampProjectMagnitude(state.minMagnitude);
   state.effectiveMinMagnitude = state.minMagnitude;
+  if (
+    state.activeCountryKey !== "all" &&
+    state.activeCountryKey !== UNCLASSIFIED_COUNTRY_KEY &&
+    state.countryByKey.has(state.activeCountryKey) &&
+    hasLoadedSubdivisionDatasetForCountry(state.activeCountryKey) &&
+    !state.subdivisionAssignedCountries.has(state.activeCountryKey)
+  ) {
+    assignSubdivisionsToCountryEvents(state.activeCountryKey);
+  }
   const scopedEvents = state.rawEvents.filter(
     (event) =>
       event.time >= state.rangeStart &&
@@ -4016,6 +4064,311 @@ function createGraticule() {
   state.gridSource.show = state.gridEnabled;
 }
 
+function buildSpatialIndexCellKey(lonIndex, latIndex) {
+  return `${lonIndex}:${latIndex}`;
+}
+
+function clampSpatialLongitude(lon) {
+  return Math.max(-180, Math.min(180, normalizeBoundaryLongitude(lon)));
+}
+
+function clampSpatialLatitude(lat) {
+  return Math.max(-90, Math.min(90, lat));
+}
+
+function getSpatialIndexRange(bbox, cellSize) {
+  const minLon = clampSpatialLongitude(bbox.minLon);
+  const maxLon = clampSpatialLongitude(bbox.maxLon);
+  const minLat = clampSpatialLatitude(bbox.minLat);
+  const maxLat = clampSpatialLatitude(bbox.maxLat);
+
+  return {
+    minLonIndex: Math.floor((minLon + 180) / cellSize),
+    maxLonIndex: Math.floor((maxLon + 180) / cellSize),
+    minLatIndex: Math.floor((minLat + 90) / cellSize),
+    maxLatIndex: Math.floor((maxLat + 90) / cellSize),
+  };
+}
+
+function buildSpatialIndex(items, cellSize) {
+  const index = new Map();
+  for (const item of items) {
+    if (!item?.bbox) {
+      continue;
+    }
+    const range = getSpatialIndexRange(item.bbox, cellSize);
+    for (let lonIndex = range.minLonIndex; lonIndex <= range.maxLonIndex; lonIndex += 1) {
+      for (let latIndex = range.minLatIndex; latIndex <= range.maxLatIndex; latIndex += 1) {
+        const key = buildSpatialIndexCellKey(lonIndex, latIndex);
+        if (!index.has(key)) {
+          index.set(key, []);
+        }
+        index.get(key).push(item);
+      }
+    }
+  }
+  return index;
+}
+
+function getSpatialIndexCandidates(index, lon, lat, fallbackItems = []) {
+  const cellKey = buildSpatialIndexCellKey(
+    Math.floor((clampSpatialLongitude(lon) + 180) / COUNTRY_INDEX_CELL_SIZE),
+    Math.floor((clampSpatialLatitude(lat) + 90) / COUNTRY_INDEX_CELL_SIZE)
+  );
+  return index.get(cellKey) || fallbackItems;
+}
+
+function getSubdivisionSpatialCandidates(index, lon, lat, fallbackItems = []) {
+  const cellKey = buildSpatialIndexCellKey(
+    Math.floor((clampSpatialLongitude(lon) + 180) / SUBDIVISION_INDEX_CELL_SIZE),
+    Math.floor((clampSpatialLatitude(lat) + 90) / SUBDIVISION_INDEX_CELL_SIZE)
+  );
+  return index.get(cellKey) || fallbackItems;
+}
+
+function sortBoundaryCandidatesBySpecificity(items = []) {
+  return [...items].sort((left, right) => {
+    const leftArea = computeBoundingBoxArea(left?.bbox || { minLon: 0, maxLon: 0, minLat: 0, maxLat: 0 });
+    const rightArea = computeBoundingBoxArea(right?.bbox || { minLon: 0, maxLon: 0, minLat: 0, maxLat: 0 });
+    return leftArea - rightArea;
+  });
+}
+
+function buildSubdivisionDataUrl(relativePath) {
+  const normalizedPath = String(relativePath || "").replace(/^[./]+/, "");
+  return `${SUBDIVISION_BASE_URL}${normalizedPath}`;
+}
+
+async function loadSubdivisionManifest() {
+  if (state.subdivisionManifest.size) {
+    return state.subdivisionManifest;
+  }
+  if (state.subdivisionManifestPromise) {
+    return state.subdivisionManifestPromise;
+  }
+
+  state.subdivisionManifestPromise = fetch(SUBDIVISION_MANIFEST_URL, {
+    cache: "force-cache",
+    headers: { Accept: "application/json" },
+  })
+    .then(async (response) => {
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}`);
+      }
+      return response.json();
+    })
+    .then((payload) => {
+      const countries = Array.isArray(payload?.countries) ? payload.countries : [];
+      state.subdivisionManifest = new Map(
+        countries.map((entry) => [String(entry.countryIso || "").trim().toUpperCase(), entry])
+      );
+      return state.subdivisionManifest;
+    })
+    .catch((error) => {
+      console.warn("Failed to load geoBoundaries ADM1 manifest", error);
+      state.subdivisionManifest = new Map();
+      return state.subdivisionManifest;
+    })
+    .finally(() => {
+      state.subdivisionManifestPromise = null;
+    });
+
+  return state.subdivisionManifestPromise;
+}
+
+function buildSubdivisionBoundaryFeature(feature) {
+  const props = feature?.properties || {};
+  const polygons = extractCountryPolygons(feature?.geometry);
+  const isoCode = String(props.shapeISO || props.shapeGroup || "").trim().toUpperCase();
+  const nameEn = String(props.shapeName || props.name || "").trim();
+  const nameZh = String(props.shapeNameZh || props.nameZh || nameEn).trim();
+  const sourceId = String(props.shapeID || feature?.id || nameEn).trim();
+
+  if (!isoCode || !nameEn || !polygons.length) {
+    return null;
+  }
+
+  return {
+    key: `${isoCode}:${normalizeCountryLookupKey(sourceId || nameEn)}`,
+    isoCode,
+    sourceId,
+    nameEn,
+    nameZh,
+    polygons,
+    bbox: computeCountryBoundingBox(polygons),
+  };
+}
+
+async function loadSubdivisionDatasetByIso(isoCode) {
+  const normalizedIso = String(isoCode || "").trim().toUpperCase();
+  if (!normalizedIso) {
+    return null;
+  }
+  if (state.subdivisionDatasets.has(normalizedIso)) {
+    return state.subdivisionDatasets.get(normalizedIso);
+  }
+  if (state.subdivisionLoadPromises.has(normalizedIso)) {
+    return state.subdivisionLoadPromises.get(normalizedIso);
+  }
+
+  const loadPromise = loadSubdivisionManifest()
+    .then(async (manifest) => {
+      const entry = manifest.get(normalizedIso);
+      if (!entry?.path) {
+        return null;
+      }
+
+      const response = await fetch(buildSubdivisionDataUrl(entry.path), {
+        cache: "force-cache",
+        headers: { Accept: "application/geo+json, application/json" },
+      });
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}`);
+      }
+
+      const payload = await response.json();
+      const features = (Array.isArray(payload?.features) ? payload.features : [])
+        .map((feature) => buildSubdivisionBoundaryFeature(feature))
+        .filter(Boolean);
+      const dataset = {
+        isoCode: normalizedIso,
+        countryName: entry.countryName || normalizedIso,
+        countryNameZh: entry.countryNameZh || entry.countryName || normalizedIso,
+        features,
+        spatialIndex: buildSpatialIndex(features, SUBDIVISION_INDEX_CELL_SIZE),
+      };
+      state.subdivisionDatasets.set(normalizedIso, dataset);
+      return dataset;
+    })
+    .catch((error) => {
+      console.warn(`Failed to load geoBoundaries ADM1 dataset for ${normalizedIso}`, error);
+      return null;
+    })
+    .finally(() => {
+      state.subdivisionLoadPromises.delete(normalizedIso);
+    });
+
+  state.subdivisionLoadPromises.set(normalizedIso, loadPromise);
+  return loadPromise;
+}
+
+function clearSubdivisionOnEvent(event) {
+  event.subdivisionKey = "";
+  event.subdivisionName = "";
+  event.subdivisionNameZh = "";
+}
+
+function applySubdivisionToEvent(event, subdivision) {
+  if (!subdivision) {
+    clearSubdivisionOnEvent(event);
+    return;
+  }
+
+  event.subdivisionKey = subdivision.key;
+  event.subdivisionName = subdivision.nameEn;
+  event.subdivisionNameZh = subdivision.nameZh || subdivision.nameEn;
+}
+
+function findSubdivisionInDataset(dataset, lon, lat) {
+  const candidates = sortBoundaryCandidatesBySpecificity(
+    getSubdivisionSpatialCandidates(dataset?.spatialIndex || new Map(), lon, lat, dataset?.features || [])
+  );
+
+  for (const subdivision of candidates) {
+    if (!pointWithinBoundingBox(lon, lat, subdivision.bbox)) {
+      continue;
+    }
+    if (pointInCountryPolygons(lon, lat, subdivision.polygons)) {
+      return subdivision;
+    }
+  }
+
+  return null;
+}
+
+function getCountrySubdivisionSourceCodes(country) {
+  return [...new Set((country?.sourceIsoCodes || []).filter(Boolean))];
+}
+
+function hasLoadedSubdivisionDatasetForCountry(countryKey) {
+  const country = state.countryByKey.get(countryKey);
+  if (!country) {
+    return false;
+  }
+  return getCountrySubdivisionSourceCodes(country).some((isoCode) => state.subdivisionDatasets.has(isoCode));
+}
+
+function assignSubdivisionsToCountryEvents(countryKey, events = null) {
+  const country = state.countryByKey.get(countryKey);
+  if (!country) {
+    return false;
+  }
+
+  const datasets = getCountrySubdivisionSourceCodes(country)
+    .map((isoCode) => state.subdivisionDatasets.get(isoCode))
+    .filter(Boolean);
+  if (!datasets.length) {
+    return false;
+  }
+
+  const targetEvents = Array.isArray(events) ? events : state.rawEvents;
+  let assignedCount = 0;
+  for (const event of targetEvents) {
+    if (event.countryKey !== countryKey) {
+      continue;
+    }
+
+    clearSubdivisionOnEvent(event);
+    for (const dataset of datasets) {
+      const subdivision = findSubdivisionInDataset(dataset, event.lon, event.lat);
+      if (subdivision) {
+        applySubdivisionToEvent(event, subdivision);
+        assignedCount += 1;
+        break;
+      }
+    }
+  }
+
+  if (!Array.isArray(events)) {
+    state.subdivisionAssignedCountries.add(countryKey);
+  }
+
+  return assignedCount > 0;
+}
+
+async function ensureSubdivisionDatasetForCountry(countryKey) {
+  if (
+    !countryKey ||
+    countryKey === "all" ||
+    countryKey === UNCLASSIFIED_COUNTRY_KEY ||
+    !state.countryByKey.has(countryKey)
+  ) {
+    return false;
+  }
+
+  const country = state.countryByKey.get(countryKey);
+  const sourceIsoCodes = getCountrySubdivisionSourceCodes(country);
+  if (!sourceIsoCodes.length) {
+    return false;
+  }
+
+  await loadSubdivisionManifest();
+  const loadTargets = sourceIsoCodes.filter((isoCode) => state.subdivisionManifest.has(isoCode));
+  if (!loadTargets.length) {
+    return false;
+  }
+
+  await Promise.all(loadTargets.map((isoCode) => loadSubdivisionDatasetByIso(isoCode)));
+  const hasAssignments = assignSubdivisionsToCountryEvents(countryKey);
+
+  if (state.activeCountryKey === countryKey) {
+    applyFiltersAndRender();
+    syncControls();
+  }
+
+  return hasAssignments;
+}
+
 async function loadBoundaryOverlay() {
   try {
     const response = await fetch(BOUNDARY_LAYER_URL, {
@@ -4057,9 +4410,9 @@ async function loadBoundaryOverlay() {
 
     state.countryBoundaries = countries;
     state.countryByKey = new Map(countries.map((country) => [country.key, country]));
-    state.countryAliases = buildCountryAliasIndex(countries);
     state.countryEntries = new Map(countries.map((country) => [country.key, country]));
     state.countrySearchIndex = countries.map((country) => buildCountrySearchEntry(country));
+    state.countrySpatialIndex = buildSpatialIndex(countries, COUNTRY_INDEX_CELL_SIZE);
     state.boundaryReady = countries.length > 0;
     if (dom.boundaryToggle) {
       dom.boundaryToggle.disabled = false;
@@ -4074,6 +4427,7 @@ async function loadBoundaryOverlay() {
     populateCountryFilterOptions();
     refreshCountryOverlay();
     updateCountryLabelVisibility();
+    loadSubdivisionManifest();
     if (state.rawEvents.length) {
       applyFiltersAndRender();
     } else {
@@ -4085,9 +4439,9 @@ async function loadBoundaryOverlay() {
     state.boundaryReady = false;
     state.countryBoundaries = [];
     state.countryByKey = new Map();
-    state.countryAliases = [];
     state.countryEntries = new Map();
     state.countrySearchIndex = [];
+    state.countrySpatialIndex = new Map();
     populateCountryFilterOptions();
     if (dom.boundaryToggle) {
       dom.boundaryToggle.checked = false;
@@ -4380,7 +4734,8 @@ function buildCountryBoundaryFeature(feature) {
   const code = grouping.code;
   const nameEn = grouping.nameEn;
   const key = buildCountryBoundaryKey(code, nameEn);
-  const continentKey = inferCountryContinent(nameEn, polygons);
+  const continentKey =
+    String(feature?.properties?.gbContinentKey || "").trim() || inferCountryContinent(nameEn, polygons);
   const labelAnchor = computeCountryLabelAnchor(polygons);
 
   return {
@@ -4396,6 +4751,7 @@ function buildCountryBoundaryFeature(feature) {
     labelPriorityArea: computeCountryLabelPriorityArea(polygons),
     aliases: buildCountryAliases(nameEn, grouping.extraAliases),
     searchTokens: buildCountrySearchTokens(nameEn, code, grouping.extraSearchTokens),
+    sourceIsoCodes: rawCode ? [rawCode] : [],
     labelEntity: null,
   };
 }
@@ -4435,6 +4791,9 @@ function mergeCountryBoundaryFeature(target, source) {
   target.aliases = [...new Set([...(target.aliases || []), ...(source.aliases || [])])];
   target.searchTokens = [
     ...new Set([...(target.searchTokens || []), ...(source.searchTokens || [])]),
+  ];
+  target.sourceIsoCodes = [
+    ...new Set([...(target.sourceIsoCodes || []), ...(source.sourceIsoCodes || [])]),
   ];
 }
 
@@ -4524,6 +4883,7 @@ function resolveBoundaryCountryEnglishName(feature) {
   const props = feature?.properties || {};
   return String(
     props.name ||
+      props.shapeName ||
       props.NAME ||
       props.admin ||
       props.ADMIN ||
@@ -4536,10 +4896,14 @@ function resolveBoundaryCountryEnglishName(feature) {
 
 function resolveCountryDisplayNameZh(feature, nameEn) {
   const props = feature?.properties || {};
+  if (props.nameZh || props.shapeNameZh) {
+    return String(props.nameZh || props.shapeNameZh).trim();
+  }
   const regionCode3Candidates = [
     props.iso_a3,
     props.ISO_A3,
     props.adm0_a3,
+    props.shapeGroup,
     typeof feature?.id === "string" && feature.id.length === 3 ? feature.id : "",
   ];
   for (const candidate of regionCode3Candidates) {
@@ -4813,18 +5177,6 @@ function appendCountryLabel(entities, country) {
   });
 }
 
-function buildCountryAliasIndex(countries) {
-  const entries = [];
-
-  for (const country of countries) {
-    for (const alias of country.aliases) {
-      entries.push({ alias, countryKey: country.key });
-    }
-  }
-
-  return entries.sort((left, right) => right.alias.length - left.alias.length);
-}
-
 function buildCountryAliases(nameEn, extraAliases = []) {
   const variants = new Set();
   const extras = COUNTRY_PLACE_ALIASES[nameEn] || [];
@@ -4865,52 +5217,33 @@ function assignCountriesToEvents(events) {
   }
 
   for (const event of events) {
-    let country = findCountryFromPlace(event.place);
-    if (!country) {
-      country = findCountryFromPlace(event.shortPlace);
-    }
-    if (!country) {
-      country = findCountryFromPlace(event.region);
-    }
-    if (!country && state.boundaryReady) {
-      country = findCountryByCoordinates(event.lon, event.lat);
-    }
-
+    const country = state.boundaryReady ? findCountryByCoordinates(event.lon, event.lat) : null;
     applyCountryToEvent(event, country);
   }
 }
 
 function applyCountryToEvent(event, country) {
+  clearSubdivisionOnEvent(event);
   if (!country) {
     event.countryKey = UNCLASSIFIED_COUNTRY_KEY;
     event.countryName = UNCLASSIFIED_COUNTRY_NAME;
     event.countryNameZh = UNCLASSIFIED_COUNTRY_NAME_ZH;
+    event.countryMatchMode = "boundary-unmatched";
     return;
   }
 
   event.countryKey = country.key;
   event.countryName = country.nameEn;
   event.countryNameZh = country.nameZh;
-}
-
-function findCountryFromPlace(place) {
-  const normalizedPlace = normalizeCountryLookupKey(place);
-  if (!normalizedPlace) {
-    return null;
-  }
-
-  const padded = ` ${normalizedPlace} `;
-  for (const entry of state.countryAliases) {
-    if (padded.includes(` ${entry.alias} `)) {
-      return state.countryByKey.get(entry.countryKey) || null;
-    }
-  }
-
-  return null;
+  event.countryMatchMode = "boundary";
 }
 
 function findCountryByCoordinates(lon, lat) {
-  for (const country of state.countryBoundaries) {
+  const candidates = sortBoundaryCandidatesBySpecificity(
+    getSpatialIndexCandidates(state.countrySpatialIndex, lon, lat, state.countryBoundaries)
+  );
+
+  for (const country of candidates) {
     if (!pointWithinBoundingBox(lon, lat, country.bbox)) {
       continue;
     }
@@ -4977,6 +5310,55 @@ function pointInRing(lon, lat, ring) {
 
 function matchesCountryFilter(event) {
   return state.activeCountryKey === "all" || event.countryKey === state.activeCountryKey;
+}
+
+function getEventDisplayRegionLabel(event) {
+  if (!event) {
+    return "";
+  }
+
+  return (
+    event.subdivisionNameZh ||
+    event.subdivisionName ||
+    event.countryNameZh ||
+    event.countryName ||
+    UNCLASSIFIED_COUNTRY_NAME_ZH
+  );
+}
+
+function getEventDetailRegionBadgeLabel(event) {
+  if (!event) {
+    return "";
+  }
+
+  if (event.subdivisionNameZh || event.subdivisionName) {
+    return event.subdivisionNameZh || event.subdivisionName;
+  }
+
+  if ((event.countryKey || UNCLASSIFIED_COUNTRY_KEY) === UNCLASSIFIED_COUNTRY_KEY) {
+    return event.countryNameZh || event.countryName || UNCLASSIFIED_COUNTRY_NAME_ZH;
+  }
+
+  return "";
+}
+
+function getEventSpatialScopeLabel(event) {
+  return getEventDisplayRegionLabel(event) || "未标注区域";
+}
+
+function isSameEventSpatialScope(left, right) {
+  if (!left || !right) {
+    return false;
+  }
+
+  if (left.subdivisionKey) {
+    return (
+      (right.countryKey || UNCLASSIFIED_COUNTRY_KEY) === (left.countryKey || UNCLASSIFIED_COUNTRY_KEY) &&
+      right.subdivisionKey === left.subdivisionKey
+    );
+  }
+
+  return (right.countryKey || UNCLASSIFIED_COUNTRY_KEY) === (left.countryKey || UNCLASSIFIED_COUNTRY_KEY);
 }
 
 function populateCountryFilterOptions(events = state.rawEvents) {
@@ -5049,7 +5431,7 @@ function populateCountryFilterOptions(events = state.rawEvents) {
 
 function buildCountryFilterNote() {
   if (!state.boundaryReady) {
-    return "正在加载国家边界与中文标注，稍后即可按国家/地区筛选。";
+    return "正在加载 geoBoundaries 国家边界与中文标注，稍后即可按国家/地区筛选。";
   }
 
   if (state.loading && !state.rawEvents.length) {
@@ -5065,7 +5447,7 @@ function buildCountryFilterNote() {
   }
 
   if (state.activeCountryKey === "all") {
-    return `当前为全球视图，可通过搜索、洲分组、列表点击，或直接点击地球上的国家区域完成筛选。`;
+    return `当前为全球视图，全部地震均按 geoBoundaries ADM0 边界坐标归属；未落入任何国家边界的事件归入“国际海域/离岸区域”。进入单个国家后，会继续按 ADM1 行政区划分热点地区。`;
   }
 
   const country = state.countryByKey.get(state.activeCountryKey);
@@ -6120,7 +6502,7 @@ function renderStats() {
   const avgDepth = computeMeanDepth(state.filteredEvents);
   const avgMagnitude = computeMeanMagnitude(state.filteredEvents);
   const latestEvent = getLatestEvent(state.filteredEvents);
-  const strongestRegion = strongest ? strongest.countryNameZh || strongest.region : "--";
+  const strongestRegion = strongest ? getEventDisplayRegionLabel(strongest) : "--";
 
   dom.visibleCount.textContent = formatNumber(state.filteredEvents.length);
   dom.strongestMag.textContent = strongest ? `M${strongest.mag.toFixed(1)}` : "--";
@@ -6175,6 +6557,7 @@ function renderSelectedEvent() {
   const tsunamiBadge = quake.tsunami
     ? '<span class="detail-badge">触发海啸标记</span>'
     : "";
+  const detailRegionBadge = getEventDetailRegionBadgeLabel(quake);
   const countryBadge = quake.countryNameZh
     ? `<span class="detail-badge">${escapeHtml(quake.countryNameZh)}</span>`
     : "";
@@ -6187,7 +6570,11 @@ function renderSelectedEvent() {
     <div class="detail-badge-row">
       <span class="detail-mag">M${quake.mag.toFixed(1)}</span>
       <span class="detail-badge">深度 ${quake.depth.toFixed(1)} km</span>
-      <span class="detail-badge">${escapeHtml(quake.region)}</span>
+      ${
+        detailRegionBadge
+          ? `<span class="detail-badge">${escapeHtml(detailRegionBadge)}</span>`
+          : ""
+      }
       ${countryBadge}
       ${marineBadge}
       ${alertBadge}
@@ -9660,75 +10047,17 @@ function buildTrendBuckets(events, start, end) {
   return buckets;
 }
 
-function buildHotspotCountryTokens(countryEntry, countryDisplayName) {
-  const tokens = new Set();
-  [
-    countryDisplayName,
-    countryEntry?.nameZh,
-    countryEntry?.nameEn,
-    ...(countryEntry?.aliases || []),
-  ].forEach((value) => {
-    const normalized = normalizeCountryLookupKey(value);
-    if (normalized) {
-      tokens.add(normalized);
-    }
-  });
-  return [...tokens];
-}
-
-function sanitizeHotspotRegionCandidate(rawCandidate, countryTokens) {
-  let cleaned = String(rawCandidate || "")
-    .replace(/^\s*\d+(?:\.\d+)?\s+(km|mi)\s+[NSEW]{1,3}\s+of\s+/i, "")
-    .trim();
-
-  if (!cleaned) {
-    return "";
+function deriveHotspotSubregionName(quake) {
+  if (quake?.subdivisionNameZh || quake?.subdivisionName) {
+    return quake.subdivisionNameZh || quake.subdivisionName;
   }
 
-  const segments = cleaned
-    .split(",")
-    .map((segment) => segment.trim())
-    .filter(Boolean);
-
-  if (segments.length > 1) {
-    const filteredSegments = segments.filter((segment) => {
-      const normalizedSegment = normalizeCountryLookupKey(segment);
-      return normalizedSegment && !countryTokens.includes(normalizedSegment);
-    });
-    cleaned = filteredSegments.length
-      ? filteredSegments[filteredSegments.length - 1]
-      : segments[0];
-  }
-
-  const normalized = normalizeCountryLookupKey(cleaned);
-  if (!normalized) {
-    return "";
-  }
-
-  const conflictsWithCountry = countryTokens.some(
-    (token) =>
-      normalized === token ||
-      normalized === `${token} region` ||
-      normalized.startsWith(`${token} `) ||
-      normalized.endsWith(` ${token}`)
-  );
-
-  if (conflictsWithCountry) {
-    return "";
-  }
-
-  return truncate(cleaned, 56);
-}
-
-function deriveHotspotSubregionName(quake, countryEntry, countryDisplayName) {
-  const countryTokens = buildHotspotCountryTokens(countryEntry, countryDisplayName);
-  const candidates = [quake.shortPlace, quake.place, quake.region];
-
-  for (const candidate of candidates) {
-    const cleaned = sanitizeHotspotRegionCandidate(candidate, countryTokens);
-    if (cleaned) {
-      return cleaned;
-    }
+  if (
+    quake?.countryKey &&
+    quake.countryKey === state.activeCountryKey &&
+    hasLoadedSubdivisionDatasetForCountry(quake.countryKey)
+  ) {
+    return SUBDIVISION_FALLBACK_REGION_ZH;
   }
 
   return null;
@@ -9763,14 +10092,8 @@ function computeHotspots(events) {
   const selectedCountryName = useSubregions
     ? getCountryDisplayNameByKey(state.activeCountryKey)
     : "";
-  const selectedCountryEntry = useSubregions
-    ? state.countryByKey.get(state.activeCountryKey) || null
-    : null;
-  const subregionCandidates = useSubregions
-    ? events.map((quake) =>
-        deriveHotspotSubregionName(quake, selectedCountryEntry, selectedCountryName)
-      )
-    : [];
+  const selectedCountryEntry = useSubregions ? state.countryByKey.get(state.activeCountryKey) || null : null;
+  const subregionCandidates = useSubregions ? events.map((quake) => deriveHotspotSubregionName(quake)) : [];
   const uniqueSubregions = new Set(
     subregionCandidates.map((value) => normalizeCountryLookupKey(value)).filter(Boolean)
   );
@@ -10244,11 +10567,8 @@ function computeFocusedEventContext(quake, events) {
   );
   const depthClassLabel = classifyDepthBand(quake.depth);
   const isMarine = detectMarineEvent(quake.place);
-  const regionScopeEvents = events.filter((event) =>
-    quake.countryKey && quake.countryKey !== UNCLASSIFIED_COUNTRY_KEY
-      ? event.countryKey === quake.countryKey
-      : event.region === quake.region
-  );
+  const regionScopeLabel = getEventSpatialScopeLabel(quake);
+  const regionScopeEvents = events.filter((event) => isSameEventSpatialScope(quake, event));
   const regionRecentCount = regionScopeEvents.filter(
     (event) => event.time >= quake.time - 30 * DAY_MS && event.time <= quake.time
   ).length;
@@ -10273,7 +10593,7 @@ function computeFocusedEventContext(quake, events) {
     observationA: `该事件震级位于当前筛选样本前 ${magnitudeTopPercent.toFixed(
       1
     )}% ，属于当前目录中的高显著度事件。`,
-    observationB: `${depthClassLabel}；在同一空间范围近 30 天内记录到 ${formatNumber(
+    observationB: `${depthClassLabel}；在 ${regionScopeLabel} 近 30 天内记录到 ${formatNumber(
       regionRecentCount
     )} 条事件，${activityPhrase}。`,
     observationC: `与当前样本最近事件的时间间隔为 ${
@@ -10550,6 +10870,10 @@ function normalizeFeature(feature) {
     countryKey: UNCLASSIFIED_COUNTRY_KEY,
     countryName: UNCLASSIFIED_COUNTRY_NAME,
     countryNameZh: UNCLASSIFIED_COUNTRY_NAME_ZH,
+    countryMatchMode: "unclassified",
+    subdivisionKey: "",
+    subdivisionName: "",
+    subdivisionNameZh: "",
   };
 }
 
