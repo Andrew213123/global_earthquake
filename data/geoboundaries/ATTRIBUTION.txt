@@ -1,0 +1,7 @@
+geoBoundaries data integrated from https://www.geoboundaries.org/globalDownloads.html
+API reference: https://www.geoboundaries.org/api.html
+Release type: gbOpen
+Products used:
+- Global ADM0 built from per-country simplifiedGeometryGeoJSON downloads
+- ADM1 per-country simplifiedGeometryGeoJSON downloads
+Attribution is required by geoBoundaries for dataset use.

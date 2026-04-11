@@ -5,6 +5,13 @@
 msedgedriver/
 .edge-test/
 .edge-test-shot/
+.site/
+_site/
+geo_data/
+data/geoboundaries/translation-cache.json
+data/geoboundaries/adm1/src/
+data/geoboundaries/adm1/admin1-boundaries.geojson
+data/geoboundaries/adm1/ne_10m_admin_1_states_provinces.zip
 
 .localserver/bin/
 .localserver/obj/
