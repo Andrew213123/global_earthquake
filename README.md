@@ -2,9 +2,9 @@
 
 # Global Earthquake
 
-**基于 CesiumJS 的全球地震 3D 可视化与分析系统**
+**Global 3D Earthquake Visualization and Analysis System Based on CesiumJS**
 
-面向全球地震活动展示、区域比较分析、教学汇报与 GitHub Pages 在线发布。
+面向全球地震活动展示、区域比较分析、教学演示、科研汇报与 GitHub Pages 在线发布的三维可视化平台。
 
 <p>
   <img alt="CesiumJS" src="https://img.shields.io/badge/CesiumJS-1.139.1-0ea5e9?style=flat-square" />
@@ -15,38 +15,48 @@
 
 </div>
 
-基于 CesiumJS 的全球地震 3D 可视化与分析系统。项目聚焦两件事：一是在三维地球上高密度、长时间尺度地展示全球地震活动，二是围绕筛选后的数据提供可用于科研汇报、课程答辩、论文附图与教学演示的分析型可视化能力。
+## Overview
+
+**Global Earthquake** 是一个面向全球地震数据展示与分析的三维可视化系统，基于 **CesiumJS** 构建。项目以全球尺度、长时间跨度和区域对比分析为核心，在三维地球场景中高密度呈现历史地震与最新事件，并围绕筛选后的事件集提供可用于 **课程答辩、科研汇报、论文附图、教学演示与在线展示** 的分析能力。
+
+与仅用于“将点绘制在地球表面”的传统演示页面不同，本项目进一步整合了 **空间浏览、时间筛选、区域识别、统计分析、图表导出与静态部署**，形成了一个从全球浏览到区域研究的完整工作流。
 
 ![Global Earthquake 项目截图](docs/images/project-page.png)
 
-## 项目定位
+---
 
-这不是一个只负责“把点画在地球上”的演示页面。当前版本已经将以下能力整合为一个完整工作流：
+## Highlights
 
-- 全球 3D 地震分布浏览
-- 历史目录与最新事件的混合加载
-- 基于 geoBoundaries 的国家与地区边界识别
-- 全中文国家/地区筛选与对比分析
-- 多模块统计图构建
-- SVG / PNG / CSV / JSON 导出
-- GitHub Pages 静态部署
-- 本地 SQLite 数据仓同步与增量写入
+- 基于 **CesiumJS 1.139.1** 的全球三维地球地震可视化
+- 支持 **1949 年至今** 的历史地震目录浏览
+- 支持 **最新事件 + 历史静态目录** 的混合加载模式
+- 基于 **geoBoundaries ADM0 / ADM1** 的国家与子区域识别
+- 支持 **全中文国家 / 地区筛选与多区域对比分析**
+- 集成多类统计图表与 **SVG / PNG / CSV / JSON** 导出能力
+- 支持 **GitHub Pages 静态部署** 与 **本地 SQLite 数据仓模式** 双运行体系
+- 适用于 **大数据可视化展示、课程项目答辩、科研演示与在线项目主页**
 
-## 核心特性
+---
 
-### 1. 三维地球场景
+## Features
 
-- 基于 `CesiumJS 1.139.1` 构建全球 3D 场景
-- 地震点支持两套视觉编码：
-  - 震级模式：按震级着色与抬升
-  - 深度模式：按深度着色与抬升
-- 支持自动旋转与手动浏览
-- 支持全球、环太平洋火环、地中海-喜马拉雅带、大西洋洋中脊等相机预设
-- 支持经纬网、国家/地区边界图层开关
+### 1. 3D Globe Visualization
 
-### 2. 时间与强度筛选
+- 基于 `CesiumJS 1.139.1` 构建三维地球主场景
+- 支持地震事件点的两种核心视觉编码：
+  - **Magnitude Mode**：按震级着色与抬升
+  - **Depth Mode**：按深度着色与抬升
+- 支持自动旋转与自由视角浏览
+- 支持经纬网、国家边界、地区边界图层控制
+- 支持多个典型地震带相机预设：
+  - 全球视角
+  - 环太平洋火环
+  - 地中海—喜马拉雅地震带
+  - 大西洋洋中脊
 
-- 预置时间窗口：
+### 2. Temporal and Magnitude Filtering
+
+- 内置多种常用时间窗口：
   - `24 小时`
   - `30 天`
   - `1 年`
@@ -54,27 +64,30 @@
   - `1949 年至今`
 - 支持自定义起止年份
 - 支持最低震级阈值筛选
-- 当前项目默认聚焦 `M3.0+` 事件，以兼顾分析价值与渲染性能
+- 默认聚焦 `M3.0+` 事件，以兼顾分析价值与渲染性能
 
-### 3. 国家 / 地区筛选系统
+### 3. Country / Region Selection
 
-- 基于 `geoBoundaries ADM0 / ADM1` 数据进行国家与子地区划分
-- 全中文国家/地区名称展示
-- 支持按洲分组浏览
-- 支持中文、英文、ISO 代码搜索
-- 支持国家聚焦与全球重置
+- 基于 `geoBoundaries ADM0 / ADM1` 实现国家与子区域划分
+- 支持全中文国家/地区名称展示
+- 支持中文、英文与 ISO 代码搜索
+- 支持按洲浏览与国家聚焦
 - 支持单国家视角下的子区域分析
 
-### 4. 区域控制中心
+### 4. Regional Comparison Workspace
 
-- 按地区事件总数、平均震级、最大震级、平均深度进行地区排序
+- 支持按以下指标对地区进行排序：
+  - 事件总数
+  - 平均震级
+  - 最大震级
+  - 平均深度
 - 支持将多个国家 / 地区 / 子区域加入对比集合
-- 支持清空选择、批量选择当前列表
-- 所有分析模块都由这里的选区驱动
+- 支持批量选择与一键清空
+- 所有分析模块均由选区集合驱动，实现统一分析入口
 
-### 5. 分析工作台
+### 5. Analytical Dashboard
 
-当前分析模块覆盖：
+当前版本提供以下分析模块：
 
 - 事件总数对比
 - 平均震级对比
@@ -85,36 +98,34 @@
 - 深度结构对比
 - 能量释放对比
 
-分析面板支持三种典型工作方式：
+适用的典型分析方式包括：
 
-- 单地区分析
-- 多地区横向比较
-- 中央弹窗深度分析与导出
+- **单地区分析**
+- **多地区横向比较**
+- **中央弹窗深度分析与导出**
 
-### 6. 学术导出与快照
+### 6. Export for Presentation and Research
 
 - 中央分析窗口支持导出：
   - `SVG`
   - `PNG`
   - `CSV`
   - `JSON`
-- 右侧分析控制台支持导出当前分析快照
-- 导出图表围绕科研表达优化，适合用于：
-  - PPT
-  - 课程答辩
-  - 研究汇报
+- 右侧控制台支持导出当前分析快照
+- 导出结果适用于：
+  - PPT 与课程答辩
+  - 学术汇报
   - 论文附图与补充材料
+  - 教学演示
 
-### 7. 数据加载与同步
-
-项目支持两种运行模式：
+### 7. Dual Runtime Modes
 
 | 模式 | 数据来源 | 是否需要后端 | 适用场景 |
 | --- | --- | --- | --- |
 | GitHub Pages 静态模式 | `data/catalog` + `data/geoboundaries` + USGS 最新事件前端补充 | 否 | 在线展示、公开部署 |
 | 本地服务模式 | SQLite + 本地 API + 静态数据 + USGS 同步 | 是 | 本地分析、数据维护、目录更新 |
 
-本地服务模式下支持：
+本地服务模式支持：
 
 - SQLite 历史目录查询
 - 全量历史目录同步
@@ -122,26 +133,61 @@
 - 静态目录导出
 - 同步状态追踪
 
-## 页面功能总览
+---
 
-### 左侧控制区
+## Architecture
+
+```mermaid
+flowchart LR
+    A[USGS Earthquake Catalog] --> B[Static Catalog / Latest Events]
+    C[geoBoundaries ADM0 / ADM1] --> D[Region Mapping]
+    B --> E[Data Filtering Engine]
+    D --> E
+    E --> F[Cesium 3D Globe View]
+    E --> G[Regional Analysis Workspace]
+    G --> H[Charts and Statistics]
+    H --> I[SVG / PNG / CSV / JSON Export]
+    B --> J[SQLite Local Warehouse]
+    J --> K[.NET Local API]
+    K --> E
+```
+
+### Core Workflow
+
+1. 从 **USGS** 获取历史目录与最新事件数据
+2. 使用 **geoBoundaries** 建立国家 / 地区 / 子区域边界映射
+3. 在前端完成时间、震级、区域与视觉编码筛选
+4. 将筛选结果同步驱动三维地球展示与统计分析模块
+5. 将分析结果导出为适合汇报与研究的图表和数据文件
+
+---
+
+## Interface Overview
+
+### Left Control Panel
+
+负责全局筛选与场景控制，包括：
 
 - 时间跨度控制
 - 最低震级控制
-- 国家/地区筛选
+- 国家 / 地区筛选
 - 视觉编码切换
-- 3D 抬升模式切换
+- 三维抬升模式切换
 - 相机预设
-- 图层控制与图例
+- 图层控制与图例显示
 
-### 中央场景区
+### Central 3D View
 
-- 3D 地球主视图
+负责三维场景展示与运行状态反馈，包括：
+
+- 三维地球主视图
 - 顶部数据概览栏
 - 操作历史记录面板
 - 最新状态与同步反馈
 
-### 右侧分析区
+### Right Analysis Panel
+
+负责区域分析、统计对比与导出，包括：
 
 - 学术分析控制台
 - SQLite 同步状态摘要
@@ -151,60 +197,71 @@
 - 比较分析工作台
 - 中央弹窗导出入口
 
-## 数据来源与技术栈
+---
 
-### 数据来源
+## Tech Stack
+
+### Frontend Visualization
+
+- `CesiumJS 1.139.1`
+- `HTML / CSS / JavaScript`
+
+### Local Service and Data Management
+
+- `.NET`
+- `SQLite`
+- `PowerShell`
+- `Python`
+
+---
+
+## Data Sources
 
 - `USGS Earthquake Catalog / GeoJSON`
 - `geoBoundaries` 全球行政边界数据
 - 本地静态历史目录 `data/catalog`
 - 本地边界目录 `data/geoboundaries`
 
-### 技术栈
+---
 
-- `CesiumJS 1.139.1`
-- 原生 `HTML / CSS / JavaScript`
-- `.NET` 本地服务
-- `SQLite` 本地数据仓
-- `PowerShell` 构建与部署脚本
-- `Python` 边界数据处理脚本
+## Quick Start
 
-## 运行方式
+### Option 1: Preview Static Frontend
 
-### 方式一：静态页面预览
-
-适合验证前端界面、GitHub Pages 产物与静态数据读取。
+适合验证前端页面、静态资源与 GitHub Pages 产物。
 
 ```powershell
 .\serve.ps1
 ```
 
-默认地址：
+默认访问地址：
 
 ```text
 http://127.0.0.1:8123
 ```
 
-### 方式二：本地完整服务模式
+### Option 2: Run Full Local Service Mode
 
-适合进行 SQLite 同步、目录维护与本地全功能联调。
+适合进行 SQLite 同步、目录维护与完整联调。
 
 ```powershell
 .\start-localserver.ps1
 ```
 
-该模式会：
+该模式将自动完成：
 
 - 编译 `.localserver`
 - 启动本地 API
-- 提供静态页面
+- 提供静态页面服务
 - 连接本地 SQLite 数据仓
 
-## GitHub Pages 部署
+---
 
-项目已经兼容 GitHub Pages 静态部署。Pages 模式下不会启动本地 .NET 服务，而是直接读取仓库中的静态数据。
+## GitHub Pages Deployment
 
-### Pages 发布内容
+项目已适配 **GitHub Pages** 静态部署。Pages 模式下不会启动本地 `.NET` 服务，而是直接读取仓库中的静态数据与资源文件。
+
+### Published Content
 
 - `index.html`
 - `app.js`
@@ -214,41 +271,45 @@ http://127.0.0.1:8123
 - `data/geoboundaries`
 - `.nojekyll`
 
-### 本地打包
+### Build Static Package
 
 ```powershell
 .\scripts\build-pages-package.ps1 -OutputDir _site
 ```
 
-### GitHub Pages 启用步骤
+### Enable Pages
 
 1. 打开仓库 `Settings -> Pages`
-2. 将 `Source` 设为 `GitHub Actions`
+2. 将 `Source` 设置为 `GitHub Actions`
 3. 推送到默认分支，或手动运行 Pages 工作流
 
-## 数据维护
+---
 
-### 导出静态历史目录
+## Data Maintenance
+
+### Export Static Historical Catalog
 
 ```powershell
 dotnet run --project .\.localserver\StaticServer.csproj -- --export-static-catalog --output=.\data\catalog
 ```
 
-### 重建 geoBoundaries 数据
+### Rebuild geoBoundaries Dataset
 
 ```powershell
 py .\scripts\build_geoboundaries_data.py
 ```
 
-该脚本用于整理本地 `ADM0 / ADM1` 边界、名称与清洗后的行政区数据。
+该脚本用于整理本地 `ADM0 / ADM1` 边界、名称映射与清洗后的行政区数据。
 
-## 目录结构
+---
+
+## Project Structure
 
 ```text
 .
 ├─ index.html                     # 主页面结构
 ├─ app.js                         # 核心交互、渲染、分析与导出逻辑
-├─ styles.css                     # 页面与分析系统样式
+├─ styles.css                     # 页面样式与分析系统样式
 ├─ data/
 │  ├─ catalog/                    # 静态历史地震目录分批数据
 │  └─ geoboundaries/              # ADM0 / ADM1 边界数据与清单
@@ -260,32 +321,44 @@ py .\scripts\build_geoboundaries_data.py
 └─ docs/images/                   # README 配图等文档资源
 ```
 
-## 当前版本亮点
+---
 
-- 1949 年至今全球地震目录可直接浏览
-- 地图边界与国家/地区筛选已经切换到本地 `geoBoundaries`
-- 国家与地区名称已统一走中文展示链路
-- 分析系统已经从单纯信息卡片升级为可导出图表工作台
-- 支持静态部署与本地数据仓双模式运行
-- 具备明显的教学展示、科研汇报与项目演示价值
-
-## 适用场景
+## Use Cases
 
 - 全球地震活动时空分布展示
-- 国家 / 地区尺度的灾害对比分析
-- 教学课程演示与答辩展示
-- 学术汇报配图与导出
-- GitHub Pages 在线项目展示
+- 国家 / 地区尺度灾害对比分析
+- 大数据可视化课程项目展示
+- 教学课程演示与答辩
+- 学术汇报配图与数据导出
+- GitHub Pages 在线可视化项目主页
 
-## 后续可继续扩展的方向
+---
 
-- 更多专题分析模块
-- 更强的导出模板与批量导出
+## Current Strengths
+
+- 可直接浏览 **1949 年至今** 的全球地震历史目录
+- 区域筛选系统已切换至本地 `geoBoundaries` 数据链路
+- 国家与地区名称已统一接入中文展示体系
+- 分析系统已从信息卡片升级为可导出图表的分析工作台
+- 同时具备静态部署与本地数据仓双模式运行能力
+- 兼顾教学展示、科研表达与在线部署价值
+
+---
+
+## Roadmap
+
+后续可继续扩展的方向包括：
+
+- 更丰富的专题分析模块
+- 更强的导出模板与批量导出能力
 - 时间动画回放
 - 板块边界与构造背景图层
 - 更细粒度的地区统计与专题报告生成
+- 面向研究级使用场景的专题分析流程增强
 
-## 致谢
+---
+
+## Acknowledgements
 
 - USGS Earthquake Catalog
 - geoBoundaries
@@ -293,4 +366,13 @@ py .\scripts\build_geoboundaries_data.py
 
 ---
 
-如果你希望把这个项目继续推进到“研究级地震分析平台”，下一步最值得做的是：完善分析窗口交互、增强导出模板、补充专题统计模块，并持续维护静态目录与本地 SQLite 数据仓的一致性。
+## Conclusion
+
+如果希望将本项目继续推进为更完整的 **研究级地震分析平台**，下一阶段最值得优先完善的方向包括：
+
+- 分析窗口交互增强
+- 导出模板规范化
+- 专题统计模块补充
+- 静态目录与本地 SQLite 数据仓一致性维护
+
+这些增强将进一步提升项目在 **大数据可视化、教学演示、科研汇报、在线展示与区域灾害分析** 等方面的综合价值。
